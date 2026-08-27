@@ -15,6 +15,10 @@
 #include <ctime>
 #include <limits>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 using namespace std;
 
 /* ==========================================================================
@@ -1025,6 +1029,13 @@ void seedSamplePrintersIfEmpty() {
 }
 
 int main() {
+#ifdef _WIN32
+    // บังคับให้ console ของ Windows ใช้ UTF-8 ทั้งขาเข้า-ขาออก
+    // (แก้ปัญหาภาษาไทยแสดงเป็นอักขระเพี้ยน ในกรณีรันผ่าน cmd.exe/PowerShell)
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     // 1) Create: โหลดข้อมูลจาก Text File เข้าสู่ Array
     loadCustomers();
     loadMaterials();
