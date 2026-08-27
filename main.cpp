@@ -2,8 +2,11 @@
    ระบบจัดการร้าน 3D Printing (3D Printing Shop Management System)
    Text-based / Console UI (TUI/CUI)
    - ใช้ Array ล้วนในการเก็บข้อมูล (ไม่ใช้ vector/STL container)
-   - Create (โหลดจากไฟล์ .txt), Search, Insert, Delete
-   - จัดการ ลูกค้า / วัสดุ(พร้อมสี) / เครื่องพิมพ์ / ออเดอร์ / คิวงาน / POS
+   - Create (โหลดจากไฟล์ .json), Search, Insert, Delete
+   - จัดการ ลูกค้า / วัสดุ(พร้อมสี) / เครื่องพิมพ์(พร้อมประเภท) / ออเดอร์(พร้อมไฟล์งาน) / คิวงาน / POS
+   - สถานะออเดอร์: Queued -> Printing -> Completed -> Paid -> PickedUp (หรือ Cancelled)
+   - ข้อมูลทั้งหมดบันทึกเป็นไฟล์ .json (เขียน/อ่านด้วยฟังก์ชัน JSON เล็ก ๆ ที่เขียนขึ้นเอง
+     ไม่พึ่งไลบรารีภายนอก เพื่อให้คอมไพล์ได้ด้วย g++ ธรรมดา)
    ============================================================================ */
 
 #include <iostream>
@@ -14,6 +17,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <limits>
+#include <cctype>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -28,16 +32,17 @@ const int MAX_CUSTOMERS = 200;
 const int MAX_MATERIALS = 100;
 const int MAX_PRINTERS  = 50;
 const int MAX_ORDERS    = 500;
+const int MAX_SALES     = 1000;
 
 const double HOURLY_RATE   = 20.0;  // บาท/ชั่วโมง (ค่าไฟ+ค่าเสื่อมเครื่อง)
 const double BASE_FEE      = 20.0;  // ค่าดำเนินการเริ่มต้นต่อออเดอร์
 const double PRINT_SPEED_G_PER_HR = 15.0; // ความเร็วพิมพ์โดยประมาณ (กรัม/ชม.)
 
-const string F_CUSTOMERS = "customers.txt";
-const string F_MATERIALS = "materials.txt";
-const string F_PRINTERS  = "printers.txt";
-const string F_ORDERS    = "orders.txt";
-const string F_SALES     = "sales_history.txt";
+const string F_CUSTOMERS = "customers.json";
+const string F_MATERIALS = "materials.json";
+const string F_PRINTERS  = "printers.json";
+const string F_ORDERS    = "orders.json";
+const string F_SALES     = "sales_history.json";
 
 #define RESET   "\033[0m"
 #define BOLD    "\033[1m"
@@ -62,16 +67,22 @@ struct Material {
 };
 
 struct Printer {
-    string code, name, status;      // status: Idle / Printing / Maintenance
-    string currentOrder;            // รหัสออเดอร์ที่กำลังพิมพ์อยู่ ("-" ถ้าว่าง)
+    string code, name, type, status;  // status: Idle / Printing / Maintenance
+    string currentOrder;              // รหัสออเดอร์ที่กำลังพิมพ์อยู่ ("-" ถ้าว่าง)
 };
 
 struct Order {
-    string code, customerCode, materialCode, printerCode;
+    string code, customerCode, materialCode, printerCode, fileName;
     double weight;    // กรัม
     double hours;     // ชั่วโมงประมาณการ
     double price;     // ราคารวม
-    string status;    // Queued / Printing / Completed / Paid / Cancelled
+    string status;    // Queued / Printing / Completed / Paid / PickedUp / Cancelled
+    bool stockDeducted; // true เมื่อหักสต็อกไปแล้ว (ตอนเริ่มพิมพ์จริง) ใช้ตัดสินใจตอนคืนสต็อก
+};
+
+struct SalesRecord {
+    string date, orderCode, customerName, materialName, color;
+    double price, cash, change;
 };
 
 /* ==========================================================================
@@ -93,6 +104,9 @@ Order orders[MAX_ORDERS];
 int orderCount = 0;
 int nextOrderId = 1;
 
+SalesRecord salesHistory[MAX_SALES];
+int salesCount = 0;
+
 /* ==========================================================================
    3) UTILITY FUNCTIONS
    ========================================================================== */
@@ -105,9 +119,6 @@ void clearScreen() {
 }
 
 void pause() {
-    // หมายเหตุ: ทุกฟังก์ชันอ่านค่า (readIntInRange / readPositiveDouble / readLineTrim)
-    // เคลียร์ '\n' ที่ค้างอยู่ใน buffer ให้เรียบร้อยแล้วก่อน return ทุกครั้ง
-    // ดังนั้นตรงนี้แค่รอผู้ใช้กด Enter หนึ่งครั้งก็พอ (ไม่ต้อง ignore() ซ้ำ)
     cout << YELLOW << "\n  กด Enter เพื่อดำเนินการต่อ..." << RESET;
     cin.clear();
     string dummy;
@@ -121,16 +132,6 @@ string trim(const string &s) {
     return s.substr(a, b - a + 1);
 }
 
-// แยกสตริงด้วยตัวคั่น เก็บผลลัพธ์ลง array (ไม่ใช้ vector)
-void splitLine(const string &line, char delim, string result[], int &count, int maxFields) {
-    count = 0;
-    stringstream ss(line);
-    string item;
-    while (getline(ss, item, delim) && count < maxFields) {
-        result[count++] = trim(item);
-    }
-}
-
 // ดึงตัวเลขท้ายรหัส เช่น "C007" -> 7
 int extractNumber(const string &code) {
     string digits = "";
@@ -139,11 +140,6 @@ int extractNumber(const string &code) {
     }
     if (digits.empty()) return 0;
     return atoi(digits.c_str());
-}
-
-double toDouble(const string &s) {
-    if (s.empty()) return 0.0;
-    return atof(s.c_str());
 }
 
 string genCode(const string &prefix, int id) {
@@ -209,137 +205,299 @@ void printLine() {
 }
 
 /* ==========================================================================
-   4) LOAD (Create) FUNCTIONS  -- อ่านจาก Text File เก็บลง Array
+   4) MINI JSON READER / WRITER (เขียนเองแบบง่าย ไม่ใช้ไลบรารีภายนอก)
+   เหมาะกับโครงสร้างข้อมูลคงที่ของโปรเจกต์นี้: อ่าน/เขียน array ของ object แบน ๆ
    ========================================================================== */
-void loadCustomers() {
-    ifstream fin(F_CUSTOMERS.c_str());
-    if (!fin.is_open()) return;
-    string line;
-    customerCount = 0;
-    while (getline(fin, line) && customerCount < MAX_CUSTOMERS) {
-        if (trim(line).empty()) continue;
-        string f[10]; int n;
-        splitLine(line, '|', f, n, 10);
-        if (n < 4) continue;
-        customers[customerCount].code = f[0];
-        customers[customerCount].name = f[1];
-        customers[customerCount].phone = f[2];
-        customers[customerCount].address = f[3];
-        int num = extractNumber(f[0]);
-        if (num + 1 > nextCustomerId) nextCustomerId = num + 1;
-        customerCount++;
-    }
-    fin.close();
+string readFileToString(const string &path) {
+    ifstream fin(path.c_str());
+    if (!fin.is_open()) return "";
+    stringstream ss;
+    ss << fin.rdbuf();
+    return ss.str();
 }
 
-void loadMaterials() {
-    ifstream fin(F_MATERIALS.c_str());
-    if (!fin.is_open()) return;
-    string line;
-    materialCount = 0;
-    while (getline(fin, line) && materialCount < MAX_MATERIALS) {
-        if (trim(line).empty()) continue;
-        string f[10]; int n;
-        splitLine(line, '|', f, n, 10);
-        if (n < 5) continue;
-        materials[materialCount].code = f[0];
-        materials[materialCount].name = f[1];
-        materials[materialCount].color = f[2];
-        materials[materialCount].pricePerGram = toDouble(f[3]);
-        materials[materialCount].stockGram = toDouble(f[4]);
-        int num = extractNumber(f[0]);
-        if (num + 1 > nextMaterialId) nextMaterialId = num + 1;
-        materialCount++;
+string jsonEscape(const string &s) {
+    string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        char c = s[i];
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else out += c;
     }
-    fin.close();
+    return out;
 }
 
-void loadPrinters() {
-    ifstream fin(F_PRINTERS.c_str());
-    if (!fin.is_open()) return;
-    string line;
-    printerCount = 0;
-    while (getline(fin, line) && printerCount < MAX_PRINTERS) {
-        if (trim(line).empty()) continue;
-        string f[10]; int n;
-        splitLine(line, '|', f, n, 10);
-        if (n < 4) continue;
-        printers[printerCount].code = f[0];
-        printers[printerCount].name = f[1];
-        printers[printerCount].status = f[2];
-        printers[printerCount].currentOrder = f[3];
-        int num = extractNumber(f[0]);
-        if (num + 1 > nextPrinterId) nextPrinterId = num + 1;
-        printerCount++;
+// ดึงค่าฟิลด์แบบ string จาก object JSON เช่น "name": "PLA"
+string jsonGetString(const string &obj, const string &key) {
+    string pattern = "\"" + key + "\"";
+    size_t p = obj.find(pattern);
+    if (p == string::npos) return "";
+    size_t colon = obj.find(':', p + pattern.size());
+    if (colon == string::npos) return "";
+    size_t q1 = obj.find('"', colon + 1);
+    if (q1 == string::npos) return "";
+    size_t i = q1 + 1;
+    string result;
+    while (i < obj.size() && obj[i] != '"') {
+        if (obj[i] == '\\' && i + 1 < obj.size()) {
+            char nc = obj[i + 1];
+            if (nc == 'n') result += '\n';
+            else result += nc;
+            i += 2;
+        } else {
+            result += obj[i];
+            i++;
+        }
     }
-    fin.close();
+    return result;
 }
 
-void loadOrders() {
-    ifstream fin(F_ORDERS.c_str());
-    if (!fin.is_open()) return;
-    string line;
-    orderCount = 0;
-    while (getline(fin, line) && orderCount < MAX_ORDERS) {
-        if (trim(line).empty()) continue;
-        string f[10]; int n;
-        splitLine(line, '|', f, n, 10);
-        if (n < 8) continue;
-        orders[orderCount].code = f[0];
-        orders[orderCount].customerCode = f[1];
-        orders[orderCount].materialCode = f[2];
-        orders[orderCount].printerCode = f[3];
-        orders[orderCount].weight = toDouble(f[4]);
-        orders[orderCount].hours = toDouble(f[5]);
-        orders[orderCount].price = toDouble(f[6]);
-        orders[orderCount].status = f[7];
-        int num = extractNumber(f[0]);
-        if (num + 1 > nextOrderId) nextOrderId = num + 1;
-        orderCount++;
+// ดึงค่าฟิลด์แบบตัวเลขจาก object JSON เช่น "price": 12.5
+double jsonGetNumber(const string &obj, const string &key) {
+    string pattern = "\"" + key + "\"";
+    size_t p = obj.find(pattern);
+    if (p == string::npos) return 0.0;
+    size_t colon = obj.find(':', p + pattern.size());
+    if (colon == string::npos) return 0.0;
+    size_t i = colon + 1;
+    while (i < obj.size() && (obj[i] == ' ' || obj[i] == '\n' || obj[i] == '\t' || obj[i] == '\r')) i++;
+    size_t start = i;
+    while (i < obj.size() && (isdigit((unsigned char)obj[i]) || obj[i] == '-' || obj[i] == '.'
+           || obj[i] == 'e' || obj[i] == 'E' || obj[i] == '+')) i++;
+    string numStr = obj.substr(start, i - start);
+    if (numStr.empty()) return 0.0;
+    return atof(numStr.c_str());
+}
+
+// ดึงค่าฟิลด์แบบ bool จาก object JSON เช่น "stockDeducted": true
+bool jsonGetBool(const string &obj, const string &key) {
+    string pattern = "\"" + key + "\"";
+    size_t p = obj.find(pattern);
+    if (p == string::npos) return false;
+    size_t colon = obj.find(':', p + pattern.size());
+    if (colon == string::npos) return false;
+    size_t truePos = obj.find("true", colon);
+    size_t falsePos = obj.find("false", colon);
+    size_t commaOrBrace = obj.find_first_of(",}", colon);
+    if (truePos != string::npos && truePos < commaOrBrace) return true;
+    if (falsePos != string::npos && falsePos < commaOrBrace) return false;
+    return false;
+}
+
+// แยก array ของ object ระดับบนสุดใน JSON ออกเป็น string ของแต่ละ object (นับวงเล็บปีกกา)
+void splitJsonObjects(const string &content, string result[], int &count, int maxItems) {
+    count = 0;
+    size_t i = content.find('[');
+    if (i == string::npos) return;
+    i++;
+    int depth = 0;
+    size_t objStart = string::npos;
+    for (; i < content.size() && count < maxItems; i++) {
+        char c = content[i];
+        if (c == '{') {
+            if (depth == 0) objStart = i;
+            depth++;
+        } else if (c == '}') {
+            depth--;
+            if (depth == 0 && objStart != string::npos) {
+                result[count++] = content.substr(objStart, i - objStart + 1);
+                objStart = string::npos;
+            }
+        } else if (c == ']' && depth == 0) {
+            break;
+        }
     }
-    fin.close();
 }
 
 /* ==========================================================================
-   5) SAVE FUNCTIONS -- บันทึกกลับลง Text File
+   5) LOAD (Create) FUNCTIONS  -- อ่านจาก JSON เก็บลง Array
+   ========================================================================== */
+void loadCustomers() {
+    customerCount = 0;
+    string content = readFileToString(F_CUSTOMERS);
+    if (content.empty()) return;
+    string objs[MAX_CUSTOMERS]; int n;
+    splitJsonObjects(content, objs, n, MAX_CUSTOMERS);
+    for (int i = 0; i < n; i++) {
+        customers[customerCount].code = jsonGetString(objs[i], "code");
+        customers[customerCount].name = jsonGetString(objs[i], "name");
+        customers[customerCount].phone = jsonGetString(objs[i], "phone");
+        customers[customerCount].address = jsonGetString(objs[i], "address");
+        int num = extractNumber(customers[customerCount].code);
+        if (num + 1 > nextCustomerId) nextCustomerId = num + 1;
+        customerCount++;
+    }
+}
+
+void loadMaterials() {
+    materialCount = 0;
+    string content = readFileToString(F_MATERIALS);
+    if (content.empty()) return;
+    string objs[MAX_MATERIALS]; int n;
+    splitJsonObjects(content, objs, n, MAX_MATERIALS);
+    for (int i = 0; i < n; i++) {
+        materials[materialCount].code = jsonGetString(objs[i], "code");
+        materials[materialCount].name = jsonGetString(objs[i], "name");
+        materials[materialCount].color = jsonGetString(objs[i], "color");
+        materials[materialCount].pricePerGram = jsonGetNumber(objs[i], "pricePerGram");
+        materials[materialCount].stockGram = jsonGetNumber(objs[i], "stockGram");
+        int num = extractNumber(materials[materialCount].code);
+        if (num + 1 > nextMaterialId) nextMaterialId = num + 1;
+        materialCount++;
+    }
+}
+
+void loadPrinters() {
+    printerCount = 0;
+    string content = readFileToString(F_PRINTERS);
+    if (content.empty()) return;
+    string objs[MAX_PRINTERS]; int n;
+    splitJsonObjects(content, objs, n, MAX_PRINTERS);
+    for (int i = 0; i < n; i++) {
+        printers[printerCount].code = jsonGetString(objs[i], "code");
+        printers[printerCount].name = jsonGetString(objs[i], "name");
+        printers[printerCount].type = jsonGetString(objs[i], "type");
+        printers[printerCount].status = jsonGetString(objs[i], "status");
+        printers[printerCount].currentOrder = jsonGetString(objs[i], "currentOrder");
+        int num = extractNumber(printers[printerCount].code);
+        if (num + 1 > nextPrinterId) nextPrinterId = num + 1;
+        printerCount++;
+    }
+}
+
+void loadOrders() {
+    orderCount = 0;
+    string content = readFileToString(F_ORDERS);
+    if (content.empty()) return;
+    string objs[MAX_ORDERS]; int n;
+    splitJsonObjects(content, objs, n, MAX_ORDERS);
+    for (int i = 0; i < n; i++) {
+        orders[orderCount].code = jsonGetString(objs[i], "code");
+        orders[orderCount].customerCode = jsonGetString(objs[i], "customerCode");
+        orders[orderCount].materialCode = jsonGetString(objs[i], "materialCode");
+        orders[orderCount].printerCode = jsonGetString(objs[i], "printerCode");
+        orders[orderCount].fileName = jsonGetString(objs[i], "fileName");
+        orders[orderCount].weight = jsonGetNumber(objs[i], "weight");
+        orders[orderCount].hours = jsonGetNumber(objs[i], "hours");
+        orders[orderCount].price = jsonGetNumber(objs[i], "price");
+        orders[orderCount].status = jsonGetString(objs[i], "status");
+        orders[orderCount].stockDeducted = jsonGetBool(objs[i], "stockDeducted");
+        int num = extractNumber(orders[orderCount].code);
+        if (num + 1 > nextOrderId) nextOrderId = num + 1;
+        orderCount++;
+    }
+}
+
+void loadSalesHistory() {
+    salesCount = 0;
+    string content = readFileToString(F_SALES);
+    if (content.empty()) return;
+    string objs[MAX_SALES]; int n;
+    splitJsonObjects(content, objs, n, MAX_SALES);
+    for (int i = 0; i < n; i++) {
+        salesHistory[salesCount].date = jsonGetString(objs[i], "date");
+        salesHistory[salesCount].orderCode = jsonGetString(objs[i], "orderCode");
+        salesHistory[salesCount].customerName = jsonGetString(objs[i], "customerName");
+        salesHistory[salesCount].materialName = jsonGetString(objs[i], "materialName");
+        salesHistory[salesCount].color = jsonGetString(objs[i], "color");
+        salesHistory[salesCount].price = jsonGetNumber(objs[i], "price");
+        salesHistory[salesCount].cash = jsonGetNumber(objs[i], "cash");
+        salesHistory[salesCount].change = jsonGetNumber(objs[i], "change");
+        salesCount++;
+    }
+}
+
+/* ==========================================================================
+   6) SAVE FUNCTIONS -- บันทึกกลับลง JSON
    ========================================================================== */
 void saveCustomers() {
     ofstream fout(F_CUSTOMERS.c_str());
+    fout << "[\n";
     for (int i = 0; i < customerCount; i++) {
-        fout << customers[i].code << "|" << customers[i].name << "|"
-             << customers[i].phone << "|" << customers[i].address << "\n";
+        fout << "  {\n";
+        fout << "    \"code\": \"" << jsonEscape(customers[i].code) << "\",\n";
+        fout << "    \"name\": \"" << jsonEscape(customers[i].name) << "\",\n";
+        fout << "    \"phone\": \"" << jsonEscape(customers[i].phone) << "\",\n";
+        fout << "    \"address\": \"" << jsonEscape(customers[i].address) << "\"\n";
+        fout << "  }" << (i < customerCount - 1 ? "," : "") << "\n";
     }
+    fout << "]\n";
     fout.close();
 }
 
 void saveMaterials() {
     ofstream fout(F_MATERIALS.c_str());
+    fout << "[\n";
     for (int i = 0; i < materialCount; i++) {
-        fout << materials[i].code << "|" << materials[i].name << "|"
-             << materials[i].color << "|" << fixed << setprecision(2)
-             << materials[i].pricePerGram << "|" << materials[i].stockGram << "\n";
+        fout << "  {\n";
+        fout << "    \"code\": \"" << jsonEscape(materials[i].code) << "\",\n";
+        fout << "    \"name\": \"" << jsonEscape(materials[i].name) << "\",\n";
+        fout << "    \"color\": \"" << jsonEscape(materials[i].color) << "\",\n";
+        fout << fixed << setprecision(2);
+        fout << "    \"pricePerGram\": " << materials[i].pricePerGram << ",\n";
+        fout << "    \"stockGram\": " << materials[i].stockGram << "\n";
+        fout << "  }" << (i < materialCount - 1 ? "," : "") << "\n";
     }
+    fout << "]\n";
     fout.close();
 }
 
 void savePrinters() {
     ofstream fout(F_PRINTERS.c_str());
+    fout << "[\n";
     for (int i = 0; i < printerCount; i++) {
-        fout << printers[i].code << "|" << printers[i].name << "|"
-             << printers[i].status << "|" << printers[i].currentOrder << "\n";
+        fout << "  {\n";
+        fout << "    \"code\": \"" << jsonEscape(printers[i].code) << "\",\n";
+        fout << "    \"name\": \"" << jsonEscape(printers[i].name) << "\",\n";
+        fout << "    \"type\": \"" << jsonEscape(printers[i].type) << "\",\n";
+        fout << "    \"status\": \"" << jsonEscape(printers[i].status) << "\",\n";
+        fout << "    \"currentOrder\": \"" << jsonEscape(printers[i].currentOrder) << "\"\n";
+        fout << "  }" << (i < printerCount - 1 ? "," : "") << "\n";
     }
+    fout << "]\n";
     fout.close();
 }
 
 void saveOrders() {
     ofstream fout(F_ORDERS.c_str());
+    fout << "[\n";
     for (int i = 0; i < orderCount; i++) {
-        fout << orders[i].code << "|" << orders[i].customerCode << "|"
-             << orders[i].materialCode << "|" << orders[i].printerCode << "|"
-             << fixed << setprecision(2) << orders[i].weight << "|"
-             << orders[i].hours << "|" << orders[i].price << "|"
-             << orders[i].status << "\n";
+        fout << "  {\n";
+        fout << "    \"code\": \"" << jsonEscape(orders[i].code) << "\",\n";
+        fout << "    \"customerCode\": \"" << jsonEscape(orders[i].customerCode) << "\",\n";
+        fout << "    \"materialCode\": \"" << jsonEscape(orders[i].materialCode) << "\",\n";
+        fout << "    \"printerCode\": \"" << jsonEscape(orders[i].printerCode) << "\",\n";
+        fout << "    \"fileName\": \"" << jsonEscape(orders[i].fileName) << "\",\n";
+        fout << fixed << setprecision(2);
+        fout << "    \"weight\": " << orders[i].weight << ",\n";
+        fout << "    \"hours\": " << orders[i].hours << ",\n";
+        fout << "    \"price\": " << orders[i].price << ",\n";
+        fout << "    \"status\": \"" << jsonEscape(orders[i].status) << "\",\n";
+        fout << "    \"stockDeducted\": " << (orders[i].stockDeducted ? "true" : "false") << "\n";
+        fout << "  }" << (i < orderCount - 1 ? "," : "") << "\n";
     }
+    fout << "]\n";
+    fout.close();
+}
+
+void saveSalesHistory() {
+    ofstream fout(F_SALES.c_str());
+    fout << "[\n";
+    for (int i = 0; i < salesCount; i++) {
+        fout << "  {\n";
+        fout << "    \"date\": \"" << jsonEscape(salesHistory[i].date) << "\",\n";
+        fout << "    \"orderCode\": \"" << jsonEscape(salesHistory[i].orderCode) << "\",\n";
+        fout << "    \"customerName\": \"" << jsonEscape(salesHistory[i].customerName) << "\",\n";
+        fout << "    \"materialName\": \"" << jsonEscape(salesHistory[i].materialName) << "\",\n";
+        fout << "    \"color\": \"" << jsonEscape(salesHistory[i].color) << "\",\n";
+        fout << fixed << setprecision(2);
+        fout << "    \"price\": " << salesHistory[i].price << ",\n";
+        fout << "    \"cash\": " << salesHistory[i].cash << ",\n";
+        fout << "    \"change\": " << salesHistory[i].change << "\n";
+        fout << "  }" << (i < salesCount - 1 ? "," : "") << "\n";
+    }
+    fout << "]\n";
     fout.close();
 }
 
@@ -348,17 +506,19 @@ void saveAll() {
     saveMaterials();
     savePrinters();
     saveOrders();
-    cout << GREEN << "  บันทึกข้อมูลทั้งหมดลงไฟล์เรียบร้อยแล้ว\n" << RESET;
+    saveSalesHistory();
+    cout << GREEN << "  บันทึกข้อมูลทั้งหมดลงไฟล์ JSON เรียบร้อยแล้ว\n" << RESET;
 }
 
-void appendSalesHistory(const string &entry) {
-    ofstream fout(F_SALES.c_str(), ios::app);
-    fout << entry << "\n";
-    fout.close();
+void appendSalesHistory(const SalesRecord &r) {
+    if (salesCount < MAX_SALES) {
+        salesHistory[salesCount++] = r;
+        saveSalesHistory();
+    }
 }
 
 /* ==========================================================================
-   6) SEARCH (return index หรือ -1)
+   7) SEARCH (return index หรือ -1)
    ========================================================================== */
 int findCustomerIndex(const string &key) {
     for (int i = 0; i < customerCount; i++)
@@ -382,7 +542,7 @@ int findOrderIndex(const string &key) {
 }
 
 /* ==========================================================================
-   7) DISPLAY (LIST) FUNCTIONS
+   8) DISPLAY (LIST) FUNCTIONS
    ========================================================================== */
 void listCustomers() {
     printHeader("รายชื่อลูกค้าทั้งหมด");
@@ -414,11 +574,12 @@ void listMaterials() {
 void listPrinters() {
     printHeader("รายการเครื่องพิมพ์ทั้งหมด");
     if (printerCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
-    cout << left << setw(8) << "รหัส" << setw(16) << "ชื่อเครื่อง"
+    cout << left << setw(8) << "รหัส" << setw(16) << "ชื่อเครื่อง" << setw(10) << "ประเภท"
          << setw(14) << "สถานะ" << "ออเดอร์ปัจจุบัน\n";
     printLine();
     for (int i = 0; i < printerCount; i++) {
-        cout << left << setw(8) << printers[i].code << setw(16) << printers[i].name;
+        cout << left << setw(8) << printers[i].code << setw(16) << printers[i].name
+             << setw(10) << printers[i].type;
         if (printers[i].status == "Idle") cout << GREEN;
         else if (printers[i].status == "Printing") cout << YELLOW;
         else cout << RED;
@@ -430,12 +591,13 @@ void listOrders() {
     printHeader("รายการออเดอร์ทั้งหมด");
     if (orderCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
     cout << left << setw(8) << "รหัส" << setw(8) << "ลูกค้า" << setw(8) << "วัสดุ"
-         << setw(8) << "เครื่อง" << setw(10) << "น.นัก(g)" << setw(8) << "ชม."
-         << setw(10) << "ราคา" << "สถานะ\n";
+         << setw(8) << "เครื่อง" << setw(16) << "ไฟล์งาน" << setw(10) << "น.นัก(g)"
+         << setw(8) << "ชม." << setw(10) << "ราคา" << "สถานะ\n";
     printLine();
     for (int i = 0; i < orderCount; i++) {
         cout << left << setw(8) << orders[i].code << setw(8) << orders[i].customerCode
              << setw(8) << orders[i].materialCode << setw(8) << orders[i].printerCode
+             << setw(16) << orders[i].fileName
              << setw(10) << fixed << setprecision(1) << orders[i].weight
              << setw(8) << orders[i].hours
              << setw(10) << setprecision(2) << orders[i].price
@@ -444,7 +606,7 @@ void listOrders() {
 }
 
 /* ==========================================================================
-   8) CUSTOMER MANAGEMENT
+   9) CUSTOMER MANAGEMENT
    ========================================================================== */
 void insertCustomer() {
     printHeader("เพิ่มลูกค้าใหม่");
@@ -475,6 +637,27 @@ void searchCustomer() {
     if (!found) cout << RED << "  ไม่พบข้อมูลลูกค้า\n" << RESET;
 }
 
+void deleteCustomer() {
+    printHeader("ลบลูกค้า");
+    string key = readLineTrim("  กรอกรหัสลูกค้าที่ต้องการลบ: ");
+    int idx = findCustomerIndex(key);
+    if (idx == -1) { cout << RED << "  ไม่พบรหัสลูกค้านี้\n" << RESET; return; }
+    // กันลบลูกค้าที่ยังมีออเดอร์ค้างอยู่ (ยังไม่ Paid/PickedUp/Cancelled)
+    for (int i = 0; i < orderCount; i++) {
+        if (orders[i].customerCode == customers[idx].code &&
+            orders[i].status != "Paid" && orders[i].status != "PickedUp" && orders[i].status != "Cancelled") {
+            cout << RED << "  ไม่สามารถลบได้ ลูกค้ายังมีออเดอร์ค้างอยู่ (" << orders[i].code << ")\n" << RESET;
+            return;
+        }
+    }
+    string conf = readLineTrim("  ยืนยันการลบลูกค้า " + customers[idx].name + "? (y/n): ");
+    if (toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการลบ\n" << RESET; return; }
+    for (int i = idx; i < customerCount - 1; i++) customers[i] = customers[i + 1];
+    customerCount--;
+    saveCustomers();
+    cout << GREEN << "  ลบลูกค้าสำเร็จ\n" << RESET;
+}
+
 void customerMenu() {
     while (true) {
         clearScreen();
@@ -482,19 +665,21 @@ void customerMenu() {
         cout << "  1. แสดงรายชื่อลูกค้าทั้งหมด\n";
         cout << "  2. ค้นหาลูกค้า\n";
         cout << "  3. เพิ่มลูกค้าใหม่\n";
+        cout << "  4. ลบลูกค้า\n";
         cout << "  0. กลับเมนูหลัก\n";
-        int c = readIntInRange("\n  เลือกเมนู: ", 0, 3);
+        int c = readIntInRange("\n  เลือกเมนู: ", 0, 4);
         clearScreen();
         if (c == 1) listCustomers();
         else if (c == 2) searchCustomer();
         else if (c == 3) insertCustomer();
+        else if (c == 4) deleteCustomer();
         else if (c == 0) return;
         pause();
     }
 }
 
 /* ==========================================================================
-   9) MATERIAL MANAGEMENT
+   10) MATERIAL MANAGEMENT
    ========================================================================== */
 void insertMaterial() {
     printHeader("เพิ่มวัสดุใหม่");
@@ -564,7 +749,7 @@ void materialMenu() {
 }
 
 /* ==========================================================================
-   10) PRINTER MANAGEMENT
+   11) PRINTER MANAGEMENT
    ========================================================================== */
 void insertPrinter() {
     printHeader("เพิ่มเครื่องพิมพ์ใหม่");
@@ -572,6 +757,7 @@ void insertPrinter() {
     Printer p;
     p.code = genCode("P", nextPrinterId++);
     p.name = readLineTrim("  ชื่อ/รุ่นเครื่องพิมพ์: ");
+    p.type = readLineTrim("  ประเภทเครื่องพิมพ์ (เช่น FDM, SLA, DLP): ");
     p.status = "Idle";
     p.currentOrder = "-";
     printers[printerCount++] = p;
@@ -583,12 +769,14 @@ void searchPrinter() {
     printHeader("ค้นหาเครื่องพิมพ์ (รหัสหรือชื่อ)");
     string key = readLineTrim("  กรอกรหัสหรือชื่อ: ");
     bool found = false;
-    cout << left << setw(8) << "รหัส" << setw(16) << "ชื่อเครื่อง" << setw(14) << "สถานะ" << "ออเดอร์ปัจจุบัน\n";
+    cout << left << setw(8) << "รหัส" << setw(16) << "ชื่อเครื่อง" << setw(10) << "ประเภท"
+         << setw(14) << "สถานะ" << "ออเดอร์ปัจจุบัน\n";
     printLine();
     for (int i = 0; i < printerCount; i++) {
         if (toUpperStr(printers[i].code) == toUpperStr(key) || containsIgnoreCase(printers[i].name, key)) {
             cout << left << setw(8) << printers[i].code << setw(16) << printers[i].name
-                 << setw(14) << printers[i].status << printers[i].currentOrder << "\n";
+                 << setw(10) << printers[i].type << setw(14) << printers[i].status
+                 << printers[i].currentOrder << "\n";
             found = true;
         }
     }
@@ -652,13 +840,12 @@ void printerMenu() {
 }
 
 /* ==========================================================================
-   11) ORDER MANAGEMENT  (Insert order = create print job, select material+color,
-        check stock, calc price, assign to queue/printer)
+   12) ORDER MANAGEMENT  (Insert order = create print job, select material+color,
+        check stock, calc price, assign/queue printer)
+   สถานะ: Queued -> Printing -> Completed -> Paid -> PickedUp (หรือ Cancelled)
+   หมายเหตุ: หักวัสดุออกจาก Stock "เมื่อเริ่มพิมพ์จริง" (ตอนสถานะเปลี่ยนเป็น Printing)
+             ไม่ใช่ตอนสร้างออเดอร์ ถ้าออเดอร์ยังอยู่ในคิว (Queued) จะยังไม่หักสต็อก
    ========================================================================== */
-double calcPrice(double weight, double hours) {
-    return BASE_FEE; // placeholder, real calc done inline (kept for clarity)
-}
-
 void createOrder() {
     printHeader("สร้างออเดอร์งานพิมพ์ใหม่");
     if (orderCount >= MAX_ORDERS) { cout << RED << "  ออเดอร์เต็มแล้ว\n" << RESET; return; }
@@ -670,6 +857,9 @@ void createOrder() {
     string custKey = readLineTrim("\n  กรอกรหัสลูกค้า: ");
     int ci = findCustomerIndex(custKey);
     if (ci == -1) { cout << RED << "  ไม่พบรหัสลูกค้านี้\n" << RESET; return; }
+
+    // --- ไฟล์งานที่จะพิมพ์ ---
+    string fileName = readLineTrim("  ชื่อไฟล์งานพิมพ์ (เช่น model.stl): ");
 
     // --- เลือกวัสดุ + สี ---
     clearScreen();
@@ -693,6 +883,7 @@ void createOrder() {
 
     cout << "\n" << MAGENTA << "  --- สรุปงานพิมพ์ ---\n" << RESET;
     cout << "  ลูกค้า      : " << customers[ci].name << "\n";
+    cout << "  ไฟล์งาน     : " << fileName << "\n";
     cout << "  วัสดุ/สี    : " << materials[mi].name << " / " << materials[mi].color << "\n";
     cout << "  น้ำหนัก     : " << fixed << setprecision(1) << weight << " กรัม\n";
     cout << "  เวลาโดยประมาณ: " << setprecision(2) << hours << " ชั่วโมง\n";
@@ -700,34 +891,56 @@ void createOrder() {
     string conf = readLineTrim("  ยืนยันสร้างออเดอร์? (y/n): ");
     if (toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
 
-    // --- หาเครื่องพิมพ์ว่าง ---
-    int pi = -1;
+    // --- แสดงเครื่องพิมพ์ที่ว่าง ให้ผู้ใช้เลือกเอง ---
+    bool hasIdle = false;
+    cout << "\n" << BOLD << "  เครื่องพิมพ์ที่พร้อมใช้งาน (Idle):\n" << RESET;
     for (int i = 0; i < printerCount; i++) {
-        if (printers[i].status == "Idle") { pi = i; break; }
+        if (printers[i].status == "Idle") {
+            cout << "    - " << printers[i].code << "  " << printers[i].name
+                 << " (" << printers[i].type << ")\n";
+            hasIdle = true;
+        }
     }
 
     Order o;
     o.code = genCode("O", nextOrderId++);
     o.customerCode = customers[ci].code;
     o.materialCode = materials[mi].code;
+    o.fileName = fileName;
     o.weight = weight;
     o.hours = hours;
     o.price = price;
+    o.stockDeducted = false;
 
-    if (pi != -1) {
-        o.printerCode = printers[pi].code;
-        o.status = "Printing";
-        printers[pi].status = "Printing";
-        printers[pi].currentOrder = o.code;
-        cout << GREEN << "  ไม่มีคิวรอ -> มอบหมายให้เครื่อง " << printers[pi].name << " เริ่มพิมพ์ทันที\n" << RESET;
-    } else {
-        o.printerCode = "-";
-        o.status = "Queued";
-        cout << YELLOW << "  เครื่องพิมพ์ไม่ว่าง -> ออเดอร์เข้าคิวรอ\n" << RESET;
+    string pickedPrinter = "-";
+    if (hasIdle) {
+        pickedPrinter = readLineTrim("  เลือกรหัสเครื่องพิมพ์ (Enter ว่าง = เข้าคิวรอ): ");
     }
 
-    // ตัดสต็อกวัสดุทันทีเมื่อสร้างออเดอร์
-    materials[mi].stockGram -= weight;
+    int pi = -1;
+    if (!pickedPrinter.empty() && pickedPrinter != "-") {
+        pi = findPrinterIndex(pickedPrinter);
+        if (pi == -1 || printers[pi].status != "Idle") {
+            cout << YELLOW << "  รหัสเครื่องพิมพ์ไม่ถูกต้องหรือไม่ว่าง -> เข้าคิวรอแทน\n" << RESET;
+            pi = -1;
+        }
+    }
+
+    if (pi != -1) {
+        // มอบหมายเครื่องพิมพ์ทันที -> เริ่มพิมพ์จริง -> หักสต็อกตอนนี้
+        o.printerCode = printers[pi].code;
+        o.status = "Printing";
+        o.stockDeducted = true;
+        printers[pi].status = "Printing";
+        printers[pi].currentOrder = o.code;
+        materials[mi].stockGram -= weight;
+        cout << GREEN << "  มอบหมายให้เครื่อง " << printers[pi].name << " เริ่มพิมพ์ทันที (หักสต็อกวัสดุแล้ว)\n" << RESET;
+    } else {
+        // ยังไม่มีเครื่องว่าง หรือผู้ใช้ไม่เลือก -> เข้าคิว ยังไม่หักสต็อก
+        o.printerCode = "-";
+        o.status = "Queued";
+        cout << YELLOW << "  ออเดอร์เข้าคิวรอ (ยังไม่หักสต็อกวัสดุจนกว่าจะเริ่มพิมพ์จริง)\n" << RESET;
+    }
 
     orders[orderCount++] = o;
     saveOrders();
@@ -741,8 +954,8 @@ void searchOrder() {
     string key = readLineTrim("  กรอกคำค้นหา: ");
     bool found = false;
     cout << left << setw(8) << "รหัส" << setw(8) << "ลูกค้า" << setw(8) << "วัสดุ"
-         << setw(8) << "เครื่อง" << setw(10) << "น.นัก(g)" << setw(8) << "ชม."
-         << setw(10) << "ราคา" << "สถานะ\n";
+         << setw(8) << "เครื่อง" << setw(16) << "ไฟล์งาน" << setw(10) << "น.นัก(g)"
+         << setw(8) << "ชม." << setw(10) << "ราคา" << "สถานะ\n";
     printLine();
     for (int i = 0; i < orderCount; i++) {
         int ci = findCustomerIndex(orders[i].customerCode);
@@ -751,6 +964,7 @@ void searchOrder() {
             toUpperStr(orders[i].customerCode) == toUpperStr(key) || nameMatch) {
             cout << left << setw(8) << orders[i].code << setw(8) << orders[i].customerCode
                  << setw(8) << orders[i].materialCode << setw(8) << orders[i].printerCode
+                 << setw(16) << orders[i].fileName
                  << setw(10) << fixed << setprecision(1) << orders[i].weight
                  << setw(8) << setprecision(2) << orders[i].hours
                  << setw(10) << orders[i].price << orders[i].status << "\n";
@@ -760,20 +974,28 @@ void searchOrder() {
     if (!found) cout << RED << "  ไม่พบออเดอร์\n" << RESET;
 }
 
-// ประมวลผลคิว: ดึงออเดอร์ที่สถานะ Queued ไปให้เครื่องที่ว่าง (Idle)
+// ประมวลผลคิว: ดึงออเดอร์ที่สถานะ Queued ไปให้เครื่องที่ว่าง (Idle) และหักสต็อก ณ จุดนี้ (เริ่มพิมพ์จริง)
 void processQueue() {
     printHeader("ประมวลผลคิวงานพิมพ์ (จับคู่ออเดอร์ที่รอกับเครื่องว่าง)");
     int assigned = 0;
     for (int i = 0; i < orderCount; i++) {
         if (orders[i].status != "Queued") continue;
+        int mi = findMaterialIndex(orders[i].materialCode);
+        if (mi == -1) continue;
+        if (orders[i].weight > materials[mi].stockGram) {
+            cout << RED << "  ออเดอร์ " << orders[i].code << " วัสดุไม่พอ (ข้ามไปก่อน)\n" << RESET;
+            continue;
+        }
         for (int p = 0; p < printerCount; p++) {
             if (printers[p].status == "Idle") {
                 orders[i].printerCode = printers[p].code;
                 orders[i].status = "Printing";
+                orders[i].stockDeducted = true;
                 printers[p].status = "Printing";
                 printers[p].currentOrder = orders[i].code;
+                materials[mi].stockGram -= orders[i].weight;
                 cout << GREEN << "  ออเดอร์ " << orders[i].code << " -> เครื่อง "
-                     << printers[p].name << RESET << "\n";
+                     << printers[p].name << " (หักสต็อกวัสดุแล้ว)" << RESET << "\n";
                 assigned++;
                 break;
             }
@@ -781,6 +1003,7 @@ void processQueue() {
     }
     if (assigned == 0) cout << YELLOW << "  ไม่มีคิวที่จับคู่ได้ (ไม่มีคิวรอ หรือไม่มีเครื่องว่าง)\n" << RESET;
     saveOrders();
+    saveMaterials();
     savePrinters();
 }
 
@@ -805,21 +1028,38 @@ void markOrderCompleted() {
     cout << GREEN << "  ออเดอร์ " << orders[oi].code << " พิมพ์เสร็จแล้ว พร้อมส่งมอบ/ชำระเงิน\n" << RESET;
 }
 
+// ยืนยันว่าลูกค้ามารับสินค้าแล้ว (Paid -> PickedUp) ปิดจบวงจรออเดอร์
+void markOrderPickedUp() {
+    printHeader("ยืนยันลูกค้ารับสินค้าแล้ว (Paid -> PickedUp)");
+    string key = readLineTrim("  กรอกรหัสออเดอร์: ");
+    int oi = findOrderIndex(key);
+    if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
+    if (orders[oi].status != "Paid") {
+        cout << RED << "  ออเดอร์นี้ยังไม่ได้ชำระเงิน (สถานะ: " << orders[oi].status << ")\n" << RESET;
+        return;
+    }
+    orders[oi].status = "PickedUp";
+    saveOrders();
+    cout << GREEN << "  ออเดอร์ " << orders[oi].code << " ส่งมอบให้ลูกค้าเรียบร้อยแล้ว (PickedUp)\n" << RESET;
+}
+
 void cancelOrder() {
     printHeader("ยกเลิกออเดอร์");
     string key = readLineTrim("  กรอกรหัสออเดอร์ที่ต้องการยกเลิก: ");
     int oi = findOrderIndex(key);
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
-    if (orders[oi].status == "Paid" || orders[oi].status == "Cancelled") {
+    if (orders[oi].status == "Paid" || orders[oi].status == "PickedUp" || orders[oi].status == "Cancelled") {
         cout << RED << "  ออเดอร์นี้ไม่สามารถยกเลิกได้ (สถานะ: " << orders[oi].status << ")\n" << RESET;
         return;
     }
     string conf = readLineTrim("  ยืนยันยกเลิกออเดอร์ " + orders[oi].code + "? (y/n): ");
     if (toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
 
-    // คืนวัสดุกลับสต็อก
-    int mi = findMaterialIndex(orders[oi].materialCode);
-    if (mi != -1) materials[mi].stockGram += orders[oi].weight;
+    // คืนวัสดุกลับสต็อก เฉพาะกรณีที่หักสต็อกไปแล้วเท่านั้น (เริ่มพิมพ์จริงแล้ว)
+    if (orders[oi].stockDeducted) {
+        int mi = findMaterialIndex(orders[oi].materialCode);
+        if (mi != -1) materials[mi].stockGram += orders[oi].weight;
+    }
 
     // ปลดเครื่องพิมพ์ถ้ากำลังพิมพ์อยู่
     if (orders[oi].status == "Printing") {
@@ -831,7 +1071,7 @@ void cancelOrder() {
     saveOrders();
     saveMaterials();
     savePrinters();
-    cout << GREEN << "  ยกเลิกออเดอร์สำเร็จ (คืนวัสดุเข้าสต็อกแล้ว)\n" << RESET;
+    cout << GREEN << "  ยกเลิกออเดอร์สำเร็จ" << (orders[oi].stockDeducted ? " (คืนวัสดุเข้าสต็อกแล้ว)" : "") << "\n" << RESET;
 }
 
 void queueStatusView() {
@@ -872,8 +1112,9 @@ void orderMenu() {
         cout << "  5. ดูสถานะคิว/เครื่องพิมพ์\n";
         cout << "  6. ประมวลผลคิว (จับคู่งานรอกับเครื่องว่าง)\n";
         cout << "  7. แจ้งพิมพ์งานเสร็จสิ้น (พร้อมส่งมอบ)\n";
+        cout << "  8. ยืนยันลูกค้ารับสินค้าแล้ว (Paid -> PickedUp)\n";
         cout << "  0. กลับเมนูหลัก\n";
-        int c = readIntInRange("\n  เลือกเมนู: ", 0, 7);
+        int c = readIntInRange("\n  เลือกเมนู: ", 0, 8);
         clearScreen();
         if (c == 1) listOrders();
         else if (c == 2) searchOrder();
@@ -882,13 +1123,14 @@ void orderMenu() {
         else if (c == 5) queueStatusView();
         else if (c == 6) processQueue();
         else if (c == 7) markOrderCompleted();
+        else if (c == 8) markOrderPickedUp();
         else if (c == 0) return;
         pause();
     }
 }
 
 /* ==========================================================================
-   12) POS -- CHECKOUT / RECEIPT
+   13) POS -- CHECKOUT / RECEIPT
    ========================================================================== */
 void printReceipt(Order &o, Customer &c, Material &m, double cash, double change) {
     time_t now = time(0);
@@ -903,6 +1145,7 @@ void printReceipt(Order &o, Customer &c, Material &m, double cash, double change
     cout << "     เลขที่ออเดอร์ : " << o.code << "\n";
     cout << "     ลูกค้า       : " << c.name << " (" << c.phone << ")\n";
     printLine();
+    cout << "     ไฟล์งาน      : " << o.fileName << "\n";
     cout << "     รายการ       : " << m.name << " สี " << m.color << "\n";
     cout << "     น้ำหนัก      : " << fixed << setprecision(1) << o.weight << " กรัม\n";
     cout << "     เวลาพิมพ์    : " << setprecision(2) << o.hours << " ชม.\n";
@@ -957,42 +1200,41 @@ void posCheckout() {
 
     printReceipt(orders[oi], customers[ci], materials[mi], cash, change);
 
-    stringstream ss;
     time_t now = time(0);
     char buf[64];
     strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M", localtime(&now));
-    ss << buf << "|" << orders[oi].code << "|" << customers[ci].name << "|"
-       << materials[mi].name << "|" << materials[mi].color << "|"
-       << fixed << setprecision(2) << orders[oi].price << "|" << cash << "|" << change;
-    appendSalesHistory(ss.str());
+
+    SalesRecord rec;
+    rec.date = buf;
+    rec.orderCode = orders[oi].code;
+    rec.customerName = customers[ci].name;
+    rec.materialName = materials[mi].name;
+    rec.color = materials[mi].color;
+    rec.price = orders[oi].price;
+    rec.cash = cash;
+    rec.change = change;
+    appendSalesHistory(rec);
 }
 
 /* ==========================================================================
-   13) REPORTS -- ประวัติการขาย
+   14) REPORTS -- ประวัติการขาย
    ========================================================================== */
 void showSalesHistory() {
     printHeader("ประวัติการขาย (Sales History)");
-    ifstream fin(F_SALES.c_str());
-    if (!fin.is_open()) { cout << "  (ยังไม่มีประวัติการขาย)\n"; return; }
-    string line;
+    if (salesCount == 0) { cout << "  (ยังไม่มีประวัติการขาย)\n"; return; }
     double total = 0;
-    int count = 0;
     cout << left << setw(17) << "วันที่" << setw(8) << "ออเดอร์" << setw(16) << "ลูกค้า"
          << setw(10) << "วัสดุ" << setw(8) << "สี" << setw(10) << "ยอด" << "\n";
     printLine();
-    while (getline(fin, line)) {
-        if (trim(line).empty()) continue;
-        string f[10]; int n;
-        splitLine(line, '|', f, n, 10);
-        if (n < 8) continue;
-        cout << left << setw(17) << f[0] << setw(8) << f[1] << setw(16) << f[2]
-             << setw(10) << f[3] << setw(8) << f[4] << setw(10) << f[5] << "\n";
-        total += toDouble(f[5]);
-        count++;
+    for (int i = 0; i < salesCount; i++) {
+        cout << left << setw(17) << salesHistory[i].date << setw(8) << salesHistory[i].orderCode
+             << setw(16) << salesHistory[i].customerName << setw(10) << salesHistory[i].materialName
+             << setw(8) << salesHistory[i].color << fixed << setprecision(2)
+             << setw(10) << salesHistory[i].price << "\n";
+        total += salesHistory[i].price;
     }
-    fin.close();
     printLine();
-    cout << GREEN << BOLD << "  จำนวนบิลทั้งหมด: " << count << "  ยอดขายรวม: "
+    cout << GREEN << BOLD << "  จำนวนบิลทั้งหมด: " << salesCount << "  ยอดขายรวม: "
          << fixed << setprecision(2) << total << " บาท" << RESET << "\n";
 }
 
@@ -1013,15 +1255,15 @@ void reportMenu() {
 }
 
 /* ==========================================================================
-   14) MAIN MENU
+   15) MAIN MENU
    ========================================================================== */
 void seedSamplePrintersIfEmpty() {
     // ถ้ายังไม่มีเครื่องพิมพ์เลย ให้สร้างตัวอย่างไว้ 2 เครื่อง เพื่อให้ทดสอบระบบได้ทันที
     if (printerCount == 0) {
         Printer p1; p1.code = genCode("P", nextPrinterId++); p1.name = "Ender-3 V2";
-        p1.status = "Idle"; p1.currentOrder = "-";
+        p1.type = "FDM"; p1.status = "Idle"; p1.currentOrder = "-";
         Printer p2; p2.code = genCode("P", nextPrinterId++); p2.name = "Prusa MK3S";
-        p2.status = "Idle"; p2.currentOrder = "-";
+        p2.type = "FDM"; p2.status = "Idle"; p2.currentOrder = "-";
         printers[printerCount++] = p1;
         printers[printerCount++] = p2;
         savePrinters();
@@ -1036,11 +1278,12 @@ int main() {
     SetConsoleCP(CP_UTF8);
 #endif
 
-    // 1) Create: โหลดข้อมูลจาก Text File เข้าสู่ Array
+    // 1) Create: โหลดข้อมูลจาก JSON เข้าสู่ Array
     loadCustomers();
     loadMaterials();
     loadPrinters();
     loadOrders();
+    loadSalesHistory();
     seedSamplePrintersIfEmpty();
 
     while (true) {
@@ -1053,10 +1296,10 @@ int main() {
         cout << " ██████╔╝██████╔╝    ██║     ██║  ██║██║██║ ╚████║   ██║   \n";
         cout << " ╚═════╝ ╚═════╝     ╚═╝     ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝   ╚═╝   \n";
         cout << RESET;
-        printHeader("ระบบจัดการร้าน 3D PRINTING - เมนูหลัก");
+        printHeader("ระบบจัดการร้าน 3D PRINTING - เมนูหลัก (JSON Storage)");
         cout << GREEN << "  [1] " << RESET << "จัดการข้อมูลลูกค้า\n";
         cout << GREEN << "  [2] " << RESET << "จัดการข้อมูลวัสดุ (พร้อมสี/สต็อก)\n";
-        cout << GREEN << "  [3] " << RESET << "จัดการเครื่องพิมพ์\n";
+        cout << GREEN << "  [3] " << RESET << "จัดการเครื่องพิมพ์ (พร้อมประเภท)\n";
         cout << GREEN << "  [4] " << RESET << "จัดการออเดอร์งานพิมพ์ / คิวงาน\n";
         cout << GREEN << "  [5] " << RESET << "POS - ชำระเงิน / ออกใบเสร็จ\n";
         cout << GREEN << "  [6] " << RESET << "รายงาน / ประวัติการขาย\n";
