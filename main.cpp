@@ -186,6 +186,24 @@ double readPositiveDouble(const string &prompt) {
     }
 }
 
+// เหมือน readPositiveDouble แต่ถ้าผู้ใช้พิมพ์ 0 แล้ว Enter จะถือว่า "ยกเลิก" (คืนค่า false)
+bool readPositiveDoubleCancelable(const string &prompt, double &result) {
+    string line;
+    while (true) {
+        cout << prompt;
+        getline(cin, line);
+        line = trim(line);
+        if (line == "0") return false; // ผู้ใช้ขอยกเลิก
+        stringstream ss(line);
+        double v;
+        if ((ss >> v) && v > 0) {
+            result = v;
+            return true;
+        }
+        cout << RED << "  กรุณากรอกตัวเลขที่มากกว่า 0 (หรือพิมพ์ 0 เพื่อยกเลิก)\n" << RESET;
+    }
+}
+
 string readLineTrim(const string &prompt) {
     cout << prompt;
     string s;
@@ -610,12 +628,24 @@ void listOrders() {
    ========================================================================== */
 void insertCustomer() {
     printHeader("เพิ่มลูกค้าใหม่");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
     if (customerCount >= MAX_CUSTOMERS) { cout << RED << "  ข้อมูลลูกค้าเต็มแล้ว\n" << RESET; return; }
+
     Customer c;
+
+    string name = readLineTrim("  ชื่อลูกค้า [0=ยกเลิก]: ");
+    if (name == "0") { cout << YELLOW << "  ยกเลิกการเพิ่มลูกค้า\n" << RESET; return; }
+    c.name = name;
+
+    string phone = readLineTrim("  เบอร์โทร [0=ยกเลิก]: ");
+    if (phone == "0") { cout << YELLOW << "  ยกเลิกการเพิ่มลูกค้า\n" << RESET; return; }
+    c.phone = phone;
+
+    string address = readLineTrim("  ที่อยู่ [0=ยกเลิก]: ");
+    if (address == "0") { cout << YELLOW << "  ยกเลิกการเพิ่มลูกค้า\n" << RESET; return; }
+    c.address = address;
+
     c.code = genCode("C", nextCustomerId++);
-    c.name = readLineTrim("  ชื่อลูกค้า: ");
-    c.phone = readLineTrim("  เบอร์โทร: ");
-    c.address = readLineTrim("  ที่อยู่: ");
     customers[customerCount++] = c;
     saveCustomers();
     cout << GREEN << "  เพิ่มลูกค้าสำเร็จ รหัส: " << c.code << RESET << "\n";
@@ -639,7 +669,8 @@ void searchCustomer() {
 
 void deleteCustomer() {
     printHeader("ลบลูกค้า");
-    string key = readLineTrim("  กรอกรหัสลูกค้าที่ต้องการลบ: ");
+    string key = readLineTrim("  กรอกรหัสลูกค้าที่ต้องการลบ [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการลบ\n" << RESET; return; }
     int idx = findCustomerIndex(key);
     if (idx == -1) { cout << RED << "  ไม่พบรหัสลูกค้านี้\n" << RESET; return; }
     // กันลบลูกค้าที่ยังมีออเดอร์ค้างอยู่ (ยังไม่ Paid/PickedUp/Cancelled)
@@ -683,13 +714,32 @@ void customerMenu() {
    ========================================================================== */
 void insertMaterial() {
     printHeader("เพิ่มวัสดุใหม่");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
     if (materialCount >= MAX_MATERIALS) { cout << RED << "  ข้อมูลวัสดุเต็มแล้ว\n" << RESET; return; }
+
     Material m;
+
+    string name = readLineTrim("  ชื่อวัสดุ (เช่น PLA, ABS, PETG) [0=ยกเลิก]: ");
+    if (name == "0") { cout << YELLOW << "  ยกเลิกการเพิ่มวัสดุ\n" << RESET; return; }
+    m.name = name;
+
+    string color = readLineTrim("  สี (เช่น Red, Black, White) [0=ยกเลิก]: ");
+    if (color == "0") { cout << YELLOW << "  ยกเลิกการเพิ่มวัสดุ\n" << RESET; return; }
+    m.color = color;
+
+    double price;
+    if (!readPositiveDoubleCancelable("  ราคาต่อกรัม (บาท) [0=ยกเลิก]: ", price)) {
+        cout << YELLOW << "  ยกเลิกการเพิ่มวัสดุ\n" << RESET; return;
+    }
+    m.pricePerGram = price;
+
+    double stock;
+    if (!readPositiveDoubleCancelable("  จำนวนคงเหลือ (กรัม) [0=ยกเลิก]: ", stock)) {
+        cout << YELLOW << "  ยกเลิกการเพิ่มวัสดุ\n" << RESET; return;
+    }
+    m.stockGram = stock;
+
     m.code = genCode("M", nextMaterialId++);
-    m.name = readLineTrim("  ชื่อวัสดุ (เช่น PLA, ABS, PETG): ");
-    m.color = readLineTrim("  สี (เช่น Red, Black, White): ");
-    m.pricePerGram = readPositiveDouble("  ราคาต่อกรัม (บาท): ");
-    m.stockGram = readPositiveDouble("  จำนวนคงเหลือ (กรัม): ");
     materials[materialCount++] = m;
     saveMaterials();
     cout << GREEN << "  เพิ่มวัสดุสำเร็จ รหัส: " << m.code << RESET << "\n";
@@ -716,7 +766,8 @@ void searchMaterial() {
 
 void deleteMaterial() {
     printHeader("ลบวัสดุ");
-    string key = readLineTrim("  กรอกรหัสวัสดุที่ต้องการลบ: ");
+    string key = readLineTrim("  กรอกรหัสวัสดุที่ต้องการลบ [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการลบ\n" << RESET; return; }
     int idx = findMaterialIndex(key);
     if (idx == -1) { cout << RED << "  ไม่พบรหัสวัสดุนี้\n" << RESET; return; }
     cout << "  วัสดุ: " << materials[idx].name << " สี " << materials[idx].color << "\n";
@@ -753,11 +804,20 @@ void materialMenu() {
    ========================================================================== */
 void insertPrinter() {
     printHeader("เพิ่มเครื่องพิมพ์ใหม่");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
     if (printerCount >= MAX_PRINTERS) { cout << RED << "  ข้อมูลเครื่องพิมพ์เต็มแล้ว\n" << RESET; return; }
+
     Printer p;
+
+    string name = readLineTrim("  ชื่อ/รุ่นเครื่องพิมพ์ [0=ยกเลิก]: ");
+    if (name == "0") { cout << YELLOW << "  ยกเลิกการเพิ่มเครื่องพิมพ์\n" << RESET; return; }
+    p.name = name;
+
+    string type = readLineTrim("  ประเภทเครื่องพิมพ์ (เช่น FDM, SLA, DLP) [0=ยกเลิก]: ");
+    if (type == "0") { cout << YELLOW << "  ยกเลิกการเพิ่มเครื่องพิมพ์\n" << RESET; return; }
+    p.type = type;
+
     p.code = genCode("P", nextPrinterId++);
-    p.name = readLineTrim("  ชื่อ/รุ่นเครื่องพิมพ์: ");
-    p.type = readLineTrim("  ประเภทเครื่องพิมพ์ (เช่น FDM, SLA, DLP): ");
     p.status = "Idle";
     p.currentOrder = "-";
     printers[printerCount++] = p;
@@ -785,7 +845,8 @@ void searchPrinter() {
 
 void deletePrinter() {
     printHeader("ลบเครื่องพิมพ์");
-    string key = readLineTrim("  กรอกรหัสเครื่องพิมพ์ที่ต้องการลบ: ");
+    string key = readLineTrim("  กรอกรหัสเครื่องพิมพ์ที่ต้องการลบ [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการลบ\n" << RESET; return; }
     int idx = findPrinterIndex(key);
     if (idx == -1) { cout << RED << "  ไม่พบรหัสเครื่องพิมพ์นี้\n" << RESET; return; }
     if (printers[idx].status == "Printing") {
@@ -848,28 +909,35 @@ void printerMenu() {
    ========================================================================== */
 void createOrder() {
     printHeader("สร้างออเดอร์งานพิมพ์ใหม่");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
     if (orderCount >= MAX_ORDERS) { cout << RED << "  ออเดอร์เต็มแล้ว\n" << RESET; return; }
     if (customerCount == 0) { cout << RED << "  กรุณาเพิ่มลูกค้าก่อนสร้างออเดอร์\n" << RESET; return; }
     if (materialCount == 0) { cout << RED << "  กรุณาเพิ่มวัสดุก่อนสร้างออเดอร์\n" << RESET; return; }
 
     // --- เลือกลูกค้า ---
     listCustomers();
-    string custKey = readLineTrim("\n  กรอกรหัสลูกค้า: ");
+    string custKey = readLineTrim("\n  กรอกรหัสลูกค้า [0=ยกเลิก]: ");
+    if (custKey == "0") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
     int ci = findCustomerIndex(custKey);
     if (ci == -1) { cout << RED << "  ไม่พบรหัสลูกค้านี้\n" << RESET; return; }
 
     // --- ไฟล์งานที่จะพิมพ์ ---
-    string fileName = readLineTrim("  ชื่อไฟล์งานพิมพ์ (เช่น model.stl): ");
+    string fileName = readLineTrim("  ชื่อไฟล์งานพิมพ์ (เช่น model.stl) [0=ยกเลิก]: ");
+    if (fileName == "0") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
 
     // --- เลือกวัสดุ + สี ---
     clearScreen();
     listMaterials();
-    string matKey = readLineTrim("\n  กรอกรหัสวัสดุ (รวมสีที่ต้องการ): ");
+    string matKey = readLineTrim("\n  กรอกรหัสวัสดุ (รวมสีที่ต้องการ) [0=ยกเลิก]: ");
+    if (matKey == "0") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
     int mi = findMaterialIndex(matKey);
     if (mi == -1) { cout << RED << "  ไม่พบรหัสวัสดุนี้\n" << RESET; return; }
 
     // --- น้ำหนักงานพิมพ์ ---
-    double weight = readPositiveDouble("  น้ำหนักโมเดลโดยประมาณ (กรัม): ");
+    double weight;
+    if (!readPositiveDoubleCancelable("  น้ำหนักโมเดลโดยประมาณ (กรัม) [0=ยกเลิก]: ", weight)) {
+        cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return;
+    }
     if (weight > materials[mi].stockGram) {
         cout << RED << "  วัสดุคงเหลือไม่พอ! คงเหลือ " << materials[mi].stockGram << " กรัม\n" << RESET;
         return;
@@ -888,8 +956,8 @@ void createOrder() {
     cout << "  น้ำหนัก     : " << fixed << setprecision(1) << weight << " กรัม\n";
     cout << "  เวลาโดยประมาณ: " << setprecision(2) << hours << " ชั่วโมง\n";
     cout << "  ราคารวม     : " << setprecision(2) << price << " บาท\n";
-    string conf = readLineTrim("  ยืนยันสร้างออเดอร์? (y/n): ");
-    if (toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
+    string conf = readLineTrim("  ยืนยันสร้างออเดอร์? (y/n, หรือ 0=ยกเลิก): ");
+    if (conf == "0" || toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
 
     // --- แสดงเครื่องพิมพ์ที่ว่าง ให้ผู้ใช้เลือกเอง ---
     bool hasIdle = false;
@@ -1010,7 +1078,8 @@ void processQueue() {
 // ทำเครื่องหมายว่าออเดอร์พิมพ์เสร็จแล้ว (Printing -> Completed) และคืนเครื่องเป็น Idle
 void markOrderCompleted() {
     printHeader("แจ้งพิมพ์งานเสร็จสิ้น (Printing -> Completed)");
-    string key = readLineTrim("  กรอกรหัสออเดอร์: ");
+    string key = readLineTrim("  กรอกรหัสออเดอร์ [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
     int oi = findOrderIndex(key);
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
     if (orders[oi].status != "Printing") {
@@ -1031,7 +1100,8 @@ void markOrderCompleted() {
 // ยืนยันว่าลูกค้ามารับสินค้าแล้ว (Paid -> PickedUp) ปิดจบวงจรออเดอร์
 void markOrderPickedUp() {
     printHeader("ยืนยันลูกค้ารับสินค้าแล้ว (Paid -> PickedUp)");
-    string key = readLineTrim("  กรอกรหัสออเดอร์: ");
+    string key = readLineTrim("  กรอกรหัสออเดอร์ [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
     int oi = findOrderIndex(key);
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
     if (orders[oi].status != "Paid") {
@@ -1045,7 +1115,8 @@ void markOrderPickedUp() {
 
 void cancelOrder() {
     printHeader("ยกเลิกออเดอร์");
-    string key = readLineTrim("  กรอกรหัสออเดอร์ที่ต้องการยกเลิก: ");
+    string key = readLineTrim("  กรอกรหัสออเดอร์ที่ต้องการยกเลิก [0=ไม่ยกเลิก/กลับเมนู]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
     int oi = findOrderIndex(key);
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
     if (orders[oi].status == "Paid" || orders[oi].status == "PickedUp" || orders[oi].status == "Cancelled") {
@@ -1160,6 +1231,7 @@ void printReceipt(Order &o, Customer &c, Material &m, double cash, double change
 
 void posCheckout() {
     printHeader("POS - ชำระเงิน / ออกใบเสร็จ");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
     cout << BOLD << "  ออเดอร์ที่พร้อมชำระเงิน (สถานะ Completed):\n" << RESET;
     bool any = false;
     for (int i = 0; i < orderCount; i++) {
@@ -1171,7 +1243,8 @@ void posCheckout() {
     }
     if (!any) { cout << YELLOW << "  ไม่มีออเดอร์ที่พร้อมชำระเงินขณะนี้\n" << RESET; return; }
 
-    string key = readLineTrim("\n  กรอกรหัสออเดอร์ที่จะชำระเงิน: ");
+    string key = readLineTrim("\n  กรอกรหัสออเดอร์ที่จะชำระเงิน [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
     int oi = findOrderIndex(key);
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
     if (orders[oi].status != "Completed") {
@@ -1186,7 +1259,9 @@ void posCheckout() {
     cout << "  ยอดที่ต้องชำระ: " << fixed << setprecision(2) << orders[oi].price << " บาท\n";
     double cash;
     while (true) {
-        cash = readPositiveDouble("  รับเงินสด (บาท): ");
+        if (!readPositiveDoubleCancelable("  รับเงินสด (บาท) [0=ยกเลิก]: ", cash)) {
+            cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return;
+        }
         if (cash < orders[oi].price) {
             cout << RED << "  เงินสดไม่พอ กรุณากรอกใหม่\n" << RESET;
             continue;
