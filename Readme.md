@@ -98,6 +98,8 @@ The Makefile uses `g++`; on Windows this works out of the box with **MinGW-w64**
 
 For a one-click option that doesn't require `make`, just double-click **`run.bat`** (or run it from `cmd.exe`). It compiles the sources with `g++` directly and launches `shop.exe`, closing any previously running instance first.
 
+**Recommended:** Run the program from **Windows Terminal** rather than the legacy `cmd.exe`/PowerShell console host. Windows Terminal has better Unicode/UTF-8 support, so Thai text and box-drawing characters render more reliably.
+
 ## Default Login
 
 Owner/staff mode is password-protected. The default password is set in `include/types.h`:
