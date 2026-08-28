@@ -38,6 +38,9 @@ const double HOURLY_RATE   = 20.0;  // บาท/ชั่วโมง (ค่�
 const double BASE_FEE      = 20.0;  // ค่าดำเนินการเริ่มต้นต่อออเดอร์
 const double PRINT_SPEED_G_PER_HR = 15.0; // ความเร็วพิมพ์โดยประมาณ (กรัม/ชม.)
 
+// รหัสผ่านสำหรับเข้าโหมดเจ้าของร้าน/พนักงาน (แก้ไขค่านี้เพื่อเปลี่ยนรหัสผ่าน)
+const string OWNER_PASSWORD = "1234";
+
 const string F_CUSTOMERS = "customers.json";
 const string F_MATERIALS = "materials.json";
 const string F_PRINTERS  = "printers.json";
@@ -160,6 +163,8 @@ bool containsIgnoreCase(const string &haystack, const string &needle) {
 }
 
 void saveAll(); // forward declaration (นิยามจริงอยู่ด้านล่าง) ใช้บันทึกข้อมูลก่อนออกเมื่อเจอ EOF ระหว่างรับข้อมูล
+void createOrderCore(int ci); // forward declaration - ตรรกะสร้างออเดอร์เมื่อทราบลูกค้าแล้ว (ใช้ร่วมกันโหมดเจ้าของ/ลูกค้า)
+void cancelOrderCore(int oi); // forward declaration - ตรรกะยกเลิกออเดอร์เมื่อทราบ index แล้ว (ใช้ร่วมกันโหมดเจ้าของ/ลูกค้า)
 
 int readIntInRange(const string &prompt, int lo, int hi) {
     int v;
@@ -566,6 +571,12 @@ int findCustomerIndex(const string &key) {
         if (toUpperStr(customers[i].code) == toUpperStr(key)) return i;
     return -1;
 }
+// ค้นหาลูกค้าด้วยเบอร์โทร (ใช้สำหรับให้ลูกค้าค้นหาบัญชีตัวเองในโหมด self-service)
+int findCustomerIndexByPhone(const string &phone) {
+    for (int i = 0; i < customerCount; i++)
+        if (customers[i].phone == phone) return i;
+    return -1;
+}
 int findMaterialIndex(const string &key) {
     for (int i = 0; i < materialCount; i++)
         if (toUpperStr(materials[i].code) == toUpperStr(key)) return i;
@@ -741,6 +752,43 @@ void insertCustomer() {
     customers[customerCount++] = c;
     saveCustomers();
     cout << GREEN << "  เพิ่มลูกค้าสำเร็จ รหัส: " << c.code << RESET << "\n";
+}
+
+// ให้ลูกค้าค้นหาบัญชีตัวเองด้วยเบอร์โทรในโหมด self-service ถ้าไม่พบ ให้เสนอสมัครสมาชิกใหม่ทันที
+// คืนค่า index ใน customers[] ของบัญชีที่ใช้งาน หรือ -1 ถ้าผู้ใช้ยกเลิก
+int customerSelfLookupOrRegister() {
+    while (true) {
+        printHeader("เข้าสู่ระบบลูกค้า");
+        cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter เพื่อยกเลิกและกลับเมนูเลือกโหมด)\n" << RESET;
+        string phone = readLineTrim("  กรอกเบอร์โทรของคุณ [0=ยกเลิก]: ");
+        if (phone == "0") return -1;
+
+        int ci = findCustomerIndexByPhone(phone);
+        if (ci != -1) {
+            cout << GREEN << "  ยินดีต้อนรับกลับ คุณ " << customers[ci].name << " (รหัสลูกค้า " << customers[ci].code << ")\n" << RESET;
+            return ci;
+        }
+
+        cout << YELLOW << "  ไม่พบบัญชีที่ใช้เบอร์นี้ ต้องการสมัครสมาชิกใหม่หรือไม่?\n" << RESET;
+        string conf = readLineTrim("  สมัครสมาชิกใหม่? (y/n): ");
+        if (toUpperStr(conf) != "Y") continue; // วนกลับไปให้กรอกเบอร์ใหม่ (หรือพิมพ์ 0 เพื่อยกเลิก)
+
+        if (customerCount >= MAX_CUSTOMERS) { cout << RED << "  ข้อมูลลูกค้าเต็มแล้ว กรุณาติดต่อพนักงาน\n" << RESET; return -1; }
+
+        Customer c;
+        c.phone = phone;
+        string name = readLineTrim("  ชื่อของคุณ [0=ยกเลิก]: ");
+        if (name == "0") continue;
+        c.name = name;
+        string address = readLineTrim("  ที่อยู่ [0=ยกเลิก]: ");
+        if (address == "0") continue;
+        c.address = address;
+        c.code = genCode("C", nextCustomerId++);
+        customers[customerCount++] = c;
+        saveCustomers();
+        cout << GREEN << "  สมัครสมาชิกสำเร็จ รหัสลูกค้าของคุณคือ " << c.code << "\n" << RESET;
+        return customerCount - 1;
+    }
 }
 
 void searchCustomer() {
@@ -1007,12 +1055,22 @@ void createOrder() {
     if (customerCount == 0) { cout << RED << "  กรุณาเพิ่มลูกค้าก่อนสร้างออเดอร์\n" << RESET; return; }
     if (materialCount == 0) { cout << RED << "  กรุณาเพิ่มวัสดุก่อนสร้างออเดอร์\n" << RESET; return; }
 
-    // --- เลือกลูกค้า ---
+    // --- เลือกลูกค้า (เฉพาะโหมดเจ้าของ/พนักงาน ที่เลือกได้ทุกคน) ---
     listCustomers();
     string custKey = readLineTrim("\n  กรอกรหัสลูกค้า [0=ยกเลิก]: ");
     if (custKey == "0") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
     int ci = findCustomerIndex(custKey);
     if (ci == -1) { cout << RED << "  ไม่พบรหัสลูกค้านี้\n" << RESET; return; }
+
+    createOrderCore(ci);
+}
+
+// ตรรกะหลักในการสร้างออเดอร์ เมื่อทราบตัวลูกค้า (ci) แล้ว
+// ใช้ร่วมกันทั้งโหมดเจ้าของ/พนักงาน (createOrder ด้านบน เลือกลูกค้าเองได้ทุกคน)
+// และโหมดลูกค้า self-service (customerCreateOrder ด้านล่าง ผูกกับลูกค้าที่ล็อกอินอยู่เท่านั้น)
+void createOrderCore(int ci) {
+    if (orderCount >= MAX_ORDERS) { cout << RED << "  ออเดอร์เต็มแล้ว\n" << RESET; return; }
+    if (materialCount == 0) { cout << RED << "  ยังไม่มีวัสดุในระบบ กรุณาติดต่อพนักงาน\n" << RESET; return; }
 
     // --- ไฟล์งานที่จะพิมพ์ ---
     string fileName = readLineTrim("  ชื่อไฟล์งานพิมพ์ (เช่น model.stl) [0=ยกเลิก]: ");
@@ -1229,7 +1287,11 @@ void cancelOrder() {
     }
     string conf = readLineTrim("  ยืนยันยกเลิกออเดอร์ " + orders[oi].code + "? (y/n): ");
     if (toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
+    cancelOrderCore(oi);
+}
 
+// ตรรกะหลักในการยกเลิกออเดอร์ (คืนสต็อก + ปลดเครื่องพิมพ์) เมื่อทราบ index (oi) และผ่านการยืนยัน/ตรวจสิทธิ์แล้ว
+void cancelOrderCore(int oi) {
     // คืนวัสดุกลับสต็อก เฉพาะกรณีที่หักสต็อกไปแล้วเท่านั้น (เริ่มพิมพ์จริงแล้ว)
     if (orders[oi].stockDeducted) {
         int mi = findMaterialIndex(orders[oi].materialCode);
@@ -1276,6 +1338,76 @@ void queueStatusView() {
         }
     }
     if (!anyQ) cout << "     (ไม่มีคิวรอ)\n";
+}
+
+// --------------------------------------------------------------------------
+// โหมดลูกค้า (self-service): สร้างออเดอร์ของตัวเอง โดยผูกกับ ci ที่ล็อกอินอยู่เท่านั้น
+// --------------------------------------------------------------------------
+void customerCreateOrder(int ci) {
+    printHeader("สร้างออเดอร์พิมพ์งานใหม่ (ของฉัน)");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
+    if (materialCount == 0) { cout << RED << "  ขณะนี้ยังไม่มีวัสดุในระบบ กรุณาติดต่อพนักงาน\n" << RESET; return; }
+    createOrderCore(ci);
+}
+
+// แสดงเฉพาะออเดอร์ของลูกค้าที่ล็อกอินอยู่ พร้อมเวลาที่เหลือถ้ากำลังพิมพ์
+void customerMyOrders(int ci) {
+    autoCompletePrinting();
+    printHeader("ออเดอร์ของฉัน (" + customers[ci].name + ")");
+    bool any = false;
+    for (int i = 0; i < orderCount; i++) {
+        if (orders[i].customerCode != customers[ci].code) continue;
+        any = true;
+        cout << "  " << orders[i].code << "  ไฟล์: " << orders[i].fileName
+             << "  ราคา: " << fixed << setprecision(2) << orders[i].price << " บาท"
+             << "  สถานะ: " << orders[i].status << printingTimeLabel(orders[i]) << "\n";
+    }
+    if (!any) cout << "  (คุณยังไม่มีออเดอร์)\n";
+}
+
+// ให้ลูกค้ายกเลิกออเดอร์ของตัวเองเท่านั้น (ตรวจสอบความเป็นเจ้าของก่อนเรียก cancelOrderCore)
+void customerCancelOrder(int ci) {
+    printHeader("ยกเลิกออเดอร์ของฉัน");
+    string key = readLineTrim("  กรอกรหัสออเดอร์ที่ต้องการยกเลิก [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
+    int oi = findOrderIndex(key);
+    if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
+    if (orders[oi].customerCode != customers[ci].code) {
+        cout << RED << "  ออเดอร์นี้ไม่ใช่ของคุณ\n" << RESET;
+        return;
+    }
+    if (orders[oi].status == "Paid" || orders[oi].status == "PickedUp" || orders[oi].status == "Cancelled") {
+        cout << RED << "  ออเดอร์นี้ไม่สามารถยกเลิกได้ (สถานะ: " << orders[oi].status << ")\n" << RESET;
+        return;
+    }
+    string conf = readLineTrim("  ยืนยันยกเลิกออเดอร์ " + orders[oi].code + "? (y/n): ");
+    if (toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
+    cancelOrderCore(oi);
+}
+
+// เมนูหลักของโหมดลูกค้า (self-service kiosk) - เห็นเฉพาะฟังก์ชันที่เกี่ยวกับตัวเอง
+// ไม่มีสิทธิ์เข้าถึงข้อมูลลูกค้าคนอื่น, จัดการวัสดุ/เครื่องพิมพ์, POS/เงินสด, หรือรายงาน
+void customerKioskMenu() {
+    clearScreen();
+    int ci = customerSelfLookupOrRegister();
+    if (ci == -1) return; // ผู้ใช้ยกเลิก กลับไปหน้าเลือกโหมด
+    pause();
+    while (true) {
+        autoCompletePrinting();
+        clearScreen();
+        printHeader("ระบบสั่งพิมพ์งานสำหรับลูกค้า - สวัสดีคุณ " + customers[ci].name);
+        cout << "  1. สร้างออเดอร์พิมพ์งานใหม่\n";
+        cout << "  2. ดูสถานะออเดอร์ของฉัน\n";
+        cout << "  3. ยกเลิกออเดอร์ของฉัน (เฉพาะที่ยังไม่ชำระเงิน/รับของ)\n";
+        cout << "  0. ออกจากระบบ (กลับเมนูเลือกโหมด)\n";
+        int c = readIntInRange("\n  เลือกเมนู: ", 0, 3);
+        clearScreen();
+        if (c == 1) customerCreateOrder(ci);
+        else if (c == 2) customerMyOrders(ci);
+        else if (c == 3) customerCancelOrder(ci);
+        else if (c == 0) return;
+        pause();
+    }
 }
 
 void orderMenu() {
@@ -1463,6 +1595,60 @@ void seedSamplePrintersIfEmpty() {
     }
 }
 
+// --------------------------------------------------------------------------
+// โหมดเจ้าของร้าน/พนักงาน: ต้องกรอกรหัสผ่านก่อนเข้าใช้งาน (ดูค่า OWNER_PASSWORD ด้านบนไฟล์)
+// --------------------------------------------------------------------------
+bool ownerLogin() {
+    printHeader("เข้าสู่ระบบเจ้าของร้าน/พนักงาน");
+    for (int attempt = 0; attempt < 3; attempt++) {
+        string pw = readLineTrim("  กรอกรหัสผ่าน [0=ยกเลิก]: ");
+        if (pw == "0") return false;
+        if (pw == OWNER_PASSWORD) return true;
+        cout << RED << "  รหัสผ่านไม่ถูกต้อง (เหลืออีก " << (2 - attempt) << " ครั้ง)\n" << RESET;
+    }
+    cout << RED << "  กรอกรหัสผ่านผิดครบจำนวนครั้งที่กำหนดแล้ว\n" << RESET;
+    return false;
+}
+
+// เมนูหลักของโหมดเจ้าของร้าน/พนักงาน (เข้าถึงฟังก์ชันจัดการระบบทั้งหมด)
+void ownerMainMenu() {
+    while (true) {
+        autoCompletePrinting();
+        clearScreen();
+        cout << BLUE << BOLD;
+        cout << " ██████╗ ██████╗     ██████╗ ██████╗ ██╗███╗   ██╗████████╗\n";
+        cout << " ╚════██╗██╔══██╗    ██╔══██╗██╔══██╗██║████╗  ██║╚══██╔══╝\n";
+        cout << "  █████╔╝██║  ██║    ██████╔╝██████╔╝██║██╔██╗ ██║   ██║   \n";
+        cout << "  ╚═══██╗██║  ██║    ██╔═══╝ ██╔══██╗██║██║╚██╗██║   ██║   \n";
+        cout << " ██████╔╝██████╔╝    ██║     ██║  ██║██║██║ ╚████║   ██║   \n";
+        cout << " ╚═════╝ ╚═════╝     ╚═╝     ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝   ╚═╝   \n";
+        cout << RESET;
+        printHeader("ระบบจัดการร้าน 3D PRINTING - เมนูเจ้าของร้าน/พนักงาน (JSON Storage)");
+        cout << GREEN << "  [1] " << RESET << "จัดการข้อมูลลูกค้า\n";
+        cout << GREEN << "  [2] " << RESET << "จัดการข้อมูลวัสดุ (พร้อมสี/สต็อก)\n";
+        cout << GREEN << "  [3] " << RESET << "จัดการเครื่องพิมพ์ (พร้อมประเภท)\n";
+        cout << GREEN << "  [4] " << RESET << "จัดการออเดอร์งานพิมพ์ / คิวงาน\n";
+        cout << GREEN << "  [5] " << RESET << "POS - ชำระเงิน / ออกใบเสร็จ\n";
+        cout << GREEN << "  [6] " << RESET << "รายงาน / ประวัติการขาย\n";
+        cout << YELLOW << "  [9] " << RESET << "บันทึกข้อมูลทั้งหมด (Save)\n";
+        cout << RED << "  [0] " << RESET << "ออกจากระบบเจ้าของร้าน (กลับเมนูเลือกโหมด)\n";
+
+        int choice = readIntInRange("\n  กรุณาเลือกเมนู: ", 0, 9);
+
+        if (choice == 1) customerMenu();
+        else if (choice == 2) materialMenu();
+        else if (choice == 3) printerMenu();
+        else if (choice == 4) orderMenu();
+        else if (choice == 5) { clearScreen(); posCheckout(); pause(); }
+        else if (choice == 6) reportMenu();
+        else if (choice == 9) { clearScreen(); saveAll(); pause(); }
+        else if (choice == 0) {
+            saveAll();
+            return; // กลับไปหน้าเลือกโหมด ไม่ปิดโปรแกรม
+        }
+    }
+}
+
 int main() {
 #ifdef _WIN32
     // บังคับให้ console ของ Windows ใช้ UTF-8 ทั้งขาเข้า-ขาออก
@@ -1490,26 +1676,24 @@ int main() {
         cout << " ██████╔╝██████╔╝    ██║     ██║  ██║██║██║ ╚████║   ██║   \n";
         cout << " ╚═════╝ ╚═════╝     ╚═╝     ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝   ╚═╝   \n";
         cout << RESET;
-        printHeader("ระบบจัดการร้าน 3D PRINTING - เมนูหลัก (JSON Storage)");
-        cout << GREEN << "  [1] " << RESET << "จัดการข้อมูลลูกค้า\n";
-        cout << GREEN << "  [2] " << RESET << "จัดการข้อมูลวัสดุ (พร้อมสี/สต็อก)\n";
-        cout << GREEN << "  [3] " << RESET << "จัดการเครื่องพิมพ์ (พร้อมประเภท)\n";
-        cout << GREEN << "  [4] " << RESET << "จัดการออเดอร์งานพิมพ์ / คิวงาน\n";
-        cout << GREEN << "  [5] " << RESET << "POS - ชำระเงิน / ออกใบเสร็จ\n";
-        cout << GREEN << "  [6] " << RESET << "รายงาน / ประวัติการขาย\n";
-        cout << YELLOW << "  [9] " << RESET << "บันทึกข้อมูลทั้งหมด (Save)\n";
-        cout << RED << "  [0] " << RESET << "บันทึกและออกจากโปรแกรม\n";
+        printHeader("ระบบจัดการร้าน 3D PRINTING - เลือกโหมดการใช้งาน");
+        cout << GREEN << "  [1] " << RESET << "โหมดลูกค้า (สั่งพิมพ์งานด้วยตนเอง)\n";
+        cout << GREEN << "  [2] " << RESET << "โหมดเจ้าของร้าน/พนักงาน (ต้องใช้รหัสผ่าน)\n";
+        cout << RED   << "  [0] " << RESET << "ออกจากโปรแกรม\n";
 
-        int choice = readIntInRange("\n  กรุณาเลือกเมนู: ", 0, 9);
+        int mode = readIntInRange("\n  กรุณาเลือกโหมด: ", 0, 2);
 
-        if (choice == 1) customerMenu();
-        else if (choice == 2) materialMenu();
-        else if (choice == 3) printerMenu();
-        else if (choice == 4) orderMenu();
-        else if (choice == 5) { clearScreen(); posCheckout(); pause(); }
-        else if (choice == 6) reportMenu();
-        else if (choice == 9) { clearScreen(); saveAll(); pause(); }
-        else if (choice == 0) {
+        if (mode == 1) {
+            customerKioskMenu();
+        } else if (mode == 2) {
+            clearScreen();
+            if (ownerLogin()) {
+                clearScreen();
+                ownerMainMenu();
+            } else {
+                pause();
+            }
+        } else if (mode == 0) {
             saveAll();
             cout << GREEN << "\n  ขอบคุณที่ใช้งานระบบ ลาก่อน!\n" << RESET;
             break;
