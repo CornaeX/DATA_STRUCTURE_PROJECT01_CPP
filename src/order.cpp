@@ -80,17 +80,7 @@ void createOrderCore(int ci) {
     string conf = readLineTrim("  ยืนยันสร้างออเดอร์? (y/n, หรือ 0=ยกเลิก): ");
     if (conf == "0" || toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการสร้างออเดอร์\n" << RESET; return; }
 
-    // --- แสดงเครื่องพิมพ์ที่ว่าง ให้ผู้ใช้เลือกเอง ---
-    bool hasIdle = false;
-    cout << "\n" << BOLD << "  เครื่องพิมพ์ที่พร้อมใช้งาน (Idle):\n" << RESET;
-    for (int i = 0; i < printerCount; i++) {
-        if (printers[i].status == "Idle") {
-            cout << "    - " << printers[i].code << "  " << printers[i].name
-                 << " (" << printers[i].type << ")\n";
-            hasIdle = true;
-        }
-    }
-
+    // --- ระบบเลือกเครื่องพิมพ์ให้อัตโนมัติ (ลูกค้าไม่ต้องเลือกเอง) ---
     Order o;
     o.code = genCode("O", nextOrderId++);
     o.customerCode = customers[ci].code;
@@ -105,18 +95,10 @@ void createOrderCore(int ci) {
     o.paymentMethod = "";
     o.fulfillment = "";
 
-    string pickedPrinter = "-";
-    if (hasIdle) {
-        pickedPrinter = readLineTrim("  เลือกรหัสเครื่องพิมพ์ (Enter ว่าง = เข้าคิวรอ): ");
-    }
-
+    // หาเครื่องพิมพ์ที่ว่าง (Idle) เครื่องแรกโดยอัตโนมัติ ถ้าไม่มี -> เข้าคิวรอ
     int pi = -1;
-    if (!pickedPrinter.empty() && pickedPrinter != "-") {
-        pi = findPrinterIndex(pickedPrinter);
-        if (pi == -1 || printers[pi].status != "Idle") {
-            cout << YELLOW << "  รหัสเครื่องพิมพ์ไม่ถูกต้องหรือไม่ว่าง -> เข้าคิวรอแทน\n" << RESET;
-            pi = -1;
-        }
+    for (int i = 0; i < printerCount; i++) {
+        if (printers[i].status == "Idle") { pi = i; break; }
     }
 
     if (pi != -1) {
@@ -128,13 +110,13 @@ void createOrderCore(int ci) {
         printers[pi].status = "Printing";
         printers[pi].currentOrder = o.code;
         materials[mi].stockGram -= weight;
-        cout << GREEN << "  มอบหมายให้เครื่อง " << printers[pi].name << " เริ่มพิมพ์ทันที (หักสต็อกวัสดุแล้ว) "
-             << "ประมาณเสร็จใน " << formatDuration(hours) << " (ระบบจะเปลี่ยนสถานะเป็น Completed ให้อัตโนมัติ)\n" << RESET;
+        cout << GREEN << "  มอบหมายให้เครื่อง " << printers[pi].name
+             << "ประมาณเสร็จใน " << formatDuration(hours) << RESET;
     } else {
         // ยังไม่มีเครื่องว่าง หรือผู้ใช้ไม่เลือก -> เข้าคิว ยังไม่หักสต็อก
         o.printerCode = "-";
         o.status = "Queued";
-        cout << YELLOW << "  ออเดอร์เข้าคิวรอ (ยังไม่หักสต็อกวัสดุจนกว่าจะเริ่มพิมพ์จริง)\n" << RESET;
+        cout << YELLOW << "  ออเดอร์เข้าคิวรอ\n" << RESET;
     }
 
     orders[orderCount++] = o;
@@ -180,7 +162,7 @@ void processQueue() {
         int mi = findMaterialIndex(orders[i].materialCode);
         if (mi == -1) continue;
         if (orders[i].weight > materials[mi].stockGram) {
-            cout << RED << "  ออเดอร์ " << orders[i].code << " วัสดุไม่พอ (ข้ามไปก่อน)\n" << RESET;
+            cout << RED << "  ออเดอร์ " << orders[i].code << " วัสดุไม่พอ\n" << RESET;
             continue;
         }
         for (int p = 0; p < printerCount; p++) {
@@ -435,4 +417,3 @@ void orderMenu() {
         pause();
     }
 }
-
