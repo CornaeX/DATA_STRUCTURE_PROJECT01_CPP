@@ -96,6 +96,8 @@ make clean
 
 The Makefile uses `g++`; on Windows this works out of the box with **MinGW-w64**. The program also detects `_WIN32` at compile time and switches the console to UTF-8 automatically, so Thai text displays correctly in `cmd.exe` / PowerShell.
 
+For a one-click option that doesn't require `make`, just double-click **`run.bat`** (or run it from `cmd.exe`). It compiles the sources with `g++` directly and launches `shop.exe`, closing any previously running instance first.
+
 ## Default Login
 
 Owner/staff mode is password-protected. The default password is set in `include/types.h`:
