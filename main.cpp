@@ -248,6 +248,51 @@ void printLine() {
     cout << "------------------------------------------------------------------\n";
 }
 
+// --------------------------------------------------------------------------
+// จัดคอลัมน์ตารางให้ตรงกัน (แก้บั๊กหัวตารางไม่ตรงกับข้อมูล)
+// ปัญหาเดิม: std::setw() นับความกว้างจาก "จำนวนไบต์" ไม่ใช่ "จำนวนตัวอักษรที่เห็นบนจอ"
+// ภาษาไทยใน UTF-8 กินไบต์ตัวละ 3 ไบต์ (เช่น "รหัส" = 4 ตัวอักษร แต่ 12 ไบต์)
+// พอ setw(8) เจอสตริงยาว 12 ไบต์ มันคิดว่ากว้างเกินคอลัมน์แล้ว เลยไม่เติมช่องว่างให้เลย
+// ทำให้หัวตารางภาษาไทยแต่ละคอลัมน์ติดกันเป็นพืด ในขณะที่แถวข้อมูล (ซึ่งมักเป็นรหัส/ตัวเลขภาษาอังกฤษ
+// ที่ 1 ไบต์ = 1 ตัวอักษรพอดี) กลับเติมช่องว่างถูกต้อง จึงทำให้หัวตารางกับข้อมูลไม่ตรงคอลัมน์กัน
+// วิธีแก้: คำนวณ "ความกว้างที่แสดงผลจริง" เอง (นับทีละอักขระ UTF-8 ไม่ใช่ทีละไบต์)
+//         แล้วเติมช่องว่างเองแทนการใช้ std::setw() กับข้อความที่อาจมีภาษาไทย
+// --------------------------------------------------------------------------
+
+// คำนวณความกว้างที่แสดงผลจริงของสตริง UTF-8 (จำนวนอักขระที่เห็นบนจอ ไม่ใช่จำนวนไบต์)
+// สระ/วรรณยุกต์ลอยของภาษาไทย (เช่น ่ ้ ๊ ๋ ั ิ ี ึ ื ุ ู ์) เป็นอักขระประกอบ (combining mark)
+// ที่วางซ้อนบนพยัญชนะ ไม่กินความกว้างหน้าจอเพิ่ม จึงนับเป็น 0 ช่อง
+int displayWidth(const string &s) {
+    int width = 0;
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char) s[i];
+        int len = 1;
+        unsigned int cp = c;
+        if ((c & 0x80) == 0x00) { len = 1; cp = c; }
+        else if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+        for (int k = 1; k < len && i + k < s.size(); k++) {
+            cp = (cp << 6) | ((unsigned char) s[i + k] & 0x3F);
+        }
+        bool isThaiCombining =
+            (cp == 0x0E31) ||                 // สระอำ/ไม้หันอากาศ (MAI HAN-AKAT)
+            (cp >= 0x0E34 && cp <= 0x0E3A) ||  // สระอิ อี อึ อื อุ อู พินทุ
+            (cp >= 0x0E47 && cp <= 0x0E4E);    // ไม้ไต่คู้ วรรณยุกต์เอก-โท-ตรี-จัตวา ทัณฑฆาต นิคหิต
+        if (!isThaiCombining) width += 1;
+        i += (size_t) len;
+    }
+    return width;
+}
+
+// จัดข้อความชิดซ้าย เติมช่องว่างด้านขวาให้ครบ "ความกว้างที่แสดงผลจริง" ตามที่กำหนด (ใช้แทน std::setw ทุกจุดที่คอลัมน์อาจมีภาษาไทย)
+string padRight(const string &s, int width) {
+    int w = displayWidth(s);
+    if (w >= width) return s; // ยาวเกินคอลัมน์แล้ว ปล่อยตามจริง (คอลัมน์ถัดไปอาจขยับบ้างถ้าข้อความยาวผิดปกติ)
+    return s + string((size_t)(width - w), ' ');
+}
+
 /* ==========================================================================
    4) MINI JSON READER / WRITER (เขียนเองแบบง่าย ไม่ใช้ไลบรารีภายนอก)
    เหมาะกับโครงสร้างข้อมูลคงที่ของโปรเจกต์นี้: อ่าน/เขียน array ของ object แบน ๆ
@@ -599,25 +644,25 @@ int findOrderIndex(const string &key) {
 void listCustomers() {
     printHeader("รายชื่อลูกค้าทั้งหมด");
     if (customerCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
-    cout << left << setw(8) << "รหัส" << setw(20) << "ชื่อ"
-         << setw(15) << "เบอร์โทร" << "ที่อยู่\n";
+    cout << padRight("รหัส", 8) << padRight("ชื่อ", 20)
+         << padRight("เบอร์โทร", 15) << "ที่อยู่\n";
     printLine();
     for (int i = 0; i < customerCount; i++) {
-        cout << left << setw(8) << customers[i].code << setw(20) << customers[i].name
-             << setw(15) << customers[i].phone << customers[i].address << "\n";
+        cout << padRight(customers[i].code, 8) << padRight(customers[i].name, 20)
+             << padRight(customers[i].phone, 15) << customers[i].address << "\n";
     }
 }
 
 void listMaterials() {
     printHeader("รายการวัสดุทั้งหมด");
     if (materialCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
-    cout << left << setw(8) << "รหัส" << setw(14) << "ชื่อวัสดุ" << setw(10) << "สี"
-         << setw(14) << "ราคา/กรัม" << "คงเหลือ(กรัม)\n";
+    cout << padRight("รหัส", 8) << padRight("ชื่อวัสดุ", 14) << padRight("สี", 10)
+         << padRight("ราคา/กรัม", 14) << "คงเหลือ(กรัม)\n";
     printLine();
     for (int i = 0; i < materialCount; i++) {
-        cout << left << setw(8) << materials[i].code << setw(14) << materials[i].name
-             << setw(10) << materials[i].color
-             << setw(14) << fixed << setprecision(2) << materials[i].pricePerGram;
+        cout << padRight(materials[i].code, 8) << padRight(materials[i].name, 14)
+             << padRight(materials[i].color, 10)
+             << setw(14) << left << fixed << setprecision(2) << materials[i].pricePerGram;
         if (materials[i].stockGram <= 100) cout << RED;
         cout << materials[i].stockGram << RESET << "\n";
     }
@@ -689,16 +734,16 @@ void listPrinters() {
     autoCompletePrinting();
     printHeader("รายการเครื่องพิมพ์ทั้งหมด");
     if (printerCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
-    cout << left << setw(8) << "รหัส" << setw(16) << "ชื่อเครื่อง" << setw(10) << "ประเภท"
-         << setw(14) << "สถานะ" << "ออเดอร์ปัจจุบัน\n";
+    cout << padRight("รหัส", 8) << padRight("ชื่อเครื่อง", 16) << padRight("ประเภท", 10)
+         << padRight("สถานะ", 14) << "ออเดอร์ปัจจุบัน\n";
     printLine();
     for (int i = 0; i < printerCount; i++) {
-        cout << left << setw(8) << printers[i].code << setw(16) << printers[i].name
-             << setw(10) << printers[i].type;
+        cout << padRight(printers[i].code, 8) << padRight(printers[i].name, 16)
+             << padRight(printers[i].type, 10);
         if (printers[i].status == "Idle") cout << GREEN;
         else if (printers[i].status == "Printing") cout << YELLOW;
         else cout << RED;
-        cout << setw(14) << printers[i].status << RESET << printers[i].currentOrder;
+        cout << padRight(printers[i].status, 14) << RESET << printers[i].currentOrder;
         if (printers[i].status == "Printing") {
             int oi = findOrderIndex(printers[i].currentOrder);
             if (oi != -1) cout << printingTimeLabel(orders[oi]);
@@ -711,17 +756,17 @@ void listOrders() {
     autoCompletePrinting();
     printHeader("รายการออเดอร์ทั้งหมด");
     if (orderCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
-    cout << left << setw(8) << "รหัส" << setw(8) << "ลูกค้า" << setw(8) << "วัสดุ"
-         << setw(8) << "เครื่อง" << setw(16) << "ไฟล์งาน" << setw(10) << "น.นัก(g)"
-         << setw(8) << "ชม." << setw(10) << "ราคา" << "สถานะ\n";
+    cout << padRight("รหัส", 8) << padRight("ลูกค้า", 8) << padRight("วัสดุ", 8)
+         << padRight("เครื่อง", 8) << padRight("ไฟล์งาน", 16) << padRight("น.นัก(g)", 10)
+         << padRight("ชม.", 8) << padRight("ราคา", 10) << "สถานะ\n";
     printLine();
     for (int i = 0; i < orderCount; i++) {
-        cout << left << setw(8) << orders[i].code << setw(8) << orders[i].customerCode
-             << setw(8) << orders[i].materialCode << setw(8) << orders[i].printerCode
-             << setw(16) << orders[i].fileName
-             << setw(10) << fixed << setprecision(1) << orders[i].weight
-             << setw(8) << orders[i].hours
-             << setw(10) << setprecision(2) << orders[i].price
+        cout << padRight(orders[i].code, 8) << padRight(orders[i].customerCode, 8)
+             << padRight(orders[i].materialCode, 8) << padRight(orders[i].printerCode, 8)
+             << padRight(orders[i].fileName, 16)
+             << setw(10) << left << fixed << setprecision(1) << orders[i].weight
+             << setw(8) << left << orders[i].hours
+             << setw(10) << left << setprecision(2) << orders[i].price
              << orders[i].status << printingTimeLabel(orders[i]) << "\n";
     }
 }
@@ -795,12 +840,12 @@ void searchCustomer() {
     printHeader("ค้นหาลูกค้า (รหัสหรือชื่อ)");
     string key = readLineTrim("  กรอกรหัสหรือชื่อ: ");
     bool found = false;
-    cout << left << setw(8) << "รหัส" << setw(20) << "ชื่อ" << setw(15) << "เบอร์โทร" << "ที่อยู่\n";
+    cout << padRight("รหัส", 8) << padRight("ชื่อ", 20) << padRight("เบอร์โทร", 15) << "ที่อยู่\n";
     printLine();
     for (int i = 0; i < customerCount; i++) {
         if (toUpperStr(customers[i].code) == toUpperStr(key) || containsIgnoreCase(customers[i].name, key)) {
-            cout << left << setw(8) << customers[i].code << setw(20) << customers[i].name
-                 << setw(15) << customers[i].phone << customers[i].address << "\n";
+            cout << padRight(customers[i].code, 8) << padRight(customers[i].name, 20)
+                 << padRight(customers[i].phone, 15) << customers[i].address << "\n";
             found = true;
         }
     }
@@ -889,14 +934,14 @@ void searchMaterial() {
     printHeader("ค้นหาวัสดุ (รหัสหรือชื่อ)");
     string key = readLineTrim("  กรอกรหัสหรือชื่อ: ");
     bool found = false;
-    cout << left << setw(8) << "รหัส" << setw(14) << "ชื่อวัสดุ" << setw(10) << "สี"
-         << setw(14) << "ราคา/กรัม" << "คงเหลือ(กรัม)\n";
+    cout << padRight("รหัส", 8) << padRight("ชื่อวัสดุ", 14) << padRight("สี", 10)
+         << padRight("ราคา/กรัม", 14) << "คงเหลือ(กรัม)\n";
     printLine();
     for (int i = 0; i < materialCount; i++) {
         if (toUpperStr(materials[i].code) == toUpperStr(key) || containsIgnoreCase(materials[i].name, key)
             || containsIgnoreCase(materials[i].color, key)) {
-            cout << left << setw(8) << materials[i].code << setw(14) << materials[i].name
-                 << setw(10) << materials[i].color << setw(14) << fixed << setprecision(2)
+            cout << padRight(materials[i].code, 8) << padRight(materials[i].name, 14)
+                 << padRight(materials[i].color, 10) << setw(14) << left << fixed << setprecision(2)
                  << materials[i].pricePerGram << materials[i].stockGram << "\n";
             found = true;
         }
@@ -969,13 +1014,13 @@ void searchPrinter() {
     printHeader("ค้นหาเครื่องพิมพ์ (รหัสหรือชื่อ)");
     string key = readLineTrim("  กรอกรหัสหรือชื่อ: ");
     bool found = false;
-    cout << left << setw(8) << "รหัส" << setw(16) << "ชื่อเครื่อง" << setw(10) << "ประเภท"
-         << setw(14) << "สถานะ" << "ออเดอร์ปัจจุบัน\n";
+    cout << padRight("รหัส", 8) << padRight("ชื่อเครื่อง", 16) << padRight("ประเภท", 10)
+         << padRight("สถานะ", 14) << "ออเดอร์ปัจจุบัน\n";
     printLine();
     for (int i = 0; i < printerCount; i++) {
         if (toUpperStr(printers[i].code) == toUpperStr(key) || containsIgnoreCase(printers[i].name, key)) {
-            cout << left << setw(8) << printers[i].code << setw(16) << printers[i].name
-                 << setw(10) << printers[i].type << setw(14) << printers[i].status
+            cout << padRight(printers[i].code, 8) << padRight(printers[i].name, 16)
+                 << padRight(printers[i].type, 10) << padRight(printers[i].status, 14)
                  << printers[i].currentOrder << "\n";
             found = true;
         }
@@ -1175,21 +1220,21 @@ void searchOrder() {
     printHeader("ค้นหาออเดอร์ (รหัสออเดอร์ หรือ ชื่อ/รหัสลูกค้า)");
     string key = readLineTrim("  กรอกคำค้นหา: ");
     bool found = false;
-    cout << left << setw(8) << "รหัส" << setw(8) << "ลูกค้า" << setw(8) << "วัสดุ"
-         << setw(8) << "เครื่อง" << setw(16) << "ไฟล์งาน" << setw(10) << "น.นัก(g)"
-         << setw(8) << "ชม." << setw(10) << "ราคา" << "สถานะ\n";
+    cout << padRight("รหัส", 8) << padRight("ลูกค้า", 8) << padRight("วัสดุ", 8)
+         << padRight("เครื่อง", 8) << padRight("ไฟล์งาน", 16) << padRight("น.นัก(g)", 10)
+         << padRight("ชม.", 8) << padRight("ราคา", 10) << "สถานะ\n";
     printLine();
     for (int i = 0; i < orderCount; i++) {
         int ci = findCustomerIndex(orders[i].customerCode);
         bool nameMatch = (ci != -1) && containsIgnoreCase(customers[ci].name, key);
         if (toUpperStr(orders[i].code) == toUpperStr(key) ||
             toUpperStr(orders[i].customerCode) == toUpperStr(key) || nameMatch) {
-            cout << left << setw(8) << orders[i].code << setw(8) << orders[i].customerCode
-                 << setw(8) << orders[i].materialCode << setw(8) << orders[i].printerCode
-                 << setw(16) << orders[i].fileName
-                 << setw(10) << fixed << setprecision(1) << orders[i].weight
-                 << setw(8) << setprecision(2) << orders[i].hours
-                 << setw(10) << orders[i].price << orders[i].status << "\n";
+            cout << padRight(orders[i].code, 8) << padRight(orders[i].customerCode, 8)
+                 << padRight(orders[i].materialCode, 8) << padRight(orders[i].printerCode, 8)
+                 << padRight(orders[i].fileName, 16)
+                 << setw(10) << left << fixed << setprecision(1) << orders[i].weight
+                 << setw(8) << left << setprecision(2) << orders[i].hours
+                 << setw(10) << left << orders[i].price << orders[i].status << "\n";
             found = true;
         }
     }
@@ -1548,14 +1593,14 @@ void showSalesHistory() {
     printHeader("ประวัติการขาย (Sales History)");
     if (salesCount == 0) { cout << "  (ยังไม่มีประวัติการขาย)\n"; return; }
     double total = 0;
-    cout << left << setw(17) << "วันที่" << setw(8) << "ออเดอร์" << setw(16) << "ลูกค้า"
-         << setw(10) << "วัสดุ" << setw(8) << "สี" << setw(10) << "ยอด" << "\n";
+    cout << padRight("วันที่", 17) << padRight("ออเดอร์", 8) << padRight("ลูกค้า", 16)
+         << padRight("วัสดุ", 10) << padRight("สี", 8) << "ยอด\n";
     printLine();
     for (int i = 0; i < salesCount; i++) {
-        cout << left << setw(17) << salesHistory[i].date << setw(8) << salesHistory[i].orderCode
-             << setw(16) << salesHistory[i].customerName << setw(10) << salesHistory[i].materialName
-             << setw(8) << salesHistory[i].color << fixed << setprecision(2)
-             << setw(10) << salesHistory[i].price << "\n";
+        cout << padRight(salesHistory[i].date, 17) << padRight(salesHistory[i].orderCode, 8)
+             << padRight(salesHistory[i].customerName, 16) << padRight(salesHistory[i].materialName, 10)
+             << padRight(salesHistory[i].color, 8) << fixed << setprecision(2)
+             << salesHistory[i].price << "\n";
         total += salesHistory[i].price;
     }
     printLine();
