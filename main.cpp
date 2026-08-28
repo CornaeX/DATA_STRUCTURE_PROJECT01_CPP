@@ -4,7 +4,7 @@
    - ใช้ Array ล้วนในการเก็บข้อมูล (ไม่ใช้ vector/STL container)
    - Create (โหลดจากไฟล์ .json), Search, Insert, Delete
    - จัดการ ลูกค้า / วัสดุ(พร้อมสี) / เครื่องพิมพ์(พร้อมประเภท) / ออเดอร์(พร้อมไฟล์งาน) / คิวงาน / POS
-   - สถานะออเดอร์: Queued -> Printing -> Completed -> Paid -> PickedUp (หรือ Cancelled)
+   - สถานะออเดอร์: Queued -> Printing -> Completed -> PickedUp / Shipped (หรือ Cancelled) การชำระเงินแยกต่างหาก (paid: Cash/Online)
    - ข้อมูลทั้งหมดบันทึกเป็นไฟล์ .json (เขียน/อ่านด้วยฟังก์ชัน JSON เล็ก ๆ ที่เขียนขึ้นเอง
      ไม่พึ่งไลบรารีภายนอก เพื่อให้คอมไพล์ได้ด้วย g++ ธรรมดา)
    ============================================================================ */
@@ -79,14 +79,19 @@ struct Order {
     double weight;    // กรัม
     double hours;     // ชั่วโมงประมาณการ
     double price;     // ราคารวม
-    string status;    // Queued / Printing / Completed / Paid / PickedUp / Cancelled
+    string status;    // Queued / Printing / Completed / PickedUp / Shipped / Cancelled
+                       // (สถานะนี้ติดตามความคืบหน้าการพิมพ์/ส่งมอบเท่านั้น แยกจากการชำระเงิน)
     bool stockDeducted; // true เมื่อหักสต็อกไปแล้ว (ตอนเริ่มพิมพ์จริง) ใช้ตัดสินใจตอนคืนสต็อก
     time_t startTime;  // เวลาที่เริ่มพิมพ์จริง (Unix timestamp) ใช้คำนวณเวลาที่เหลือ / เช็คว่าพิมพ์เสร็จหรือยัง (0 = ยังไม่เริ่ม)
+    bool paid;             // ชำระเงินแล้วหรือยัง (แยกจาก status เพื่อให้ชำระเงินออนไลน์ได้ทุกช่วงสถานะ)
+    string paymentMethod;  // "" / "Cash" / "Online"
+    string fulfillment;    // "" / "Pickup" / "Shipping" (มีความหมายเฉพาะออเดอร์ที่ชำระออนไลน์ ส่วนเงินสดถือเป็น Pickup เสมอ)
 };
 
 struct SalesRecord {
     string date, orderCode, customerName, materialName, color;
     double price, cash, change;
+    string paymentMethod; // "Cash" / "Online"
 };
 
 /* ==========================================================================
@@ -165,6 +170,8 @@ bool containsIgnoreCase(const string &haystack, const string &needle) {
 void saveAll(); // forward declaration (นิยามจริงอยู่ด้านล่าง) ใช้บันทึกข้อมูลก่อนออกเมื่อเจอ EOF ระหว่างรับข้อมูล
 void createOrderCore(int ci); // forward declaration - ตรรกะสร้างออเดอร์เมื่อทราบลูกค้าแล้ว (ใช้ร่วมกันโหมดเจ้าของ/ลูกค้า)
 void cancelOrderCore(int oi); // forward declaration - ตรรกะยกเลิกออเดอร์เมื่อทราบ index แล้ว (ใช้ร่วมกันโหมดเจ้าของ/ลูกค้า)
+void ownerPayOnline();        // forward declaration - เมนูชำระเงินออนไลน์ฝั่งเจ้าของ/พนักงาน (นิยามจริงอยู่ในหมวด POS)
+void customerPayOnline(int ci); // forward declaration - เมนูชำระเงินออนไลน์ฝั่งลูกค้า (นิยามจริงอยู่ในหมวด POS)
 
 int readIntInRange(const string &prompt, int lo, int hi) {
     int v;
@@ -239,13 +246,13 @@ string readLineTrim(const string &prompt) {
 
 void printHeader(const string &title) {
     cout << CYAN << BOLD;
-    cout << "==================================================================\n";
+    cout << "=========================================================================================\n";
     cout << "   " << title << "\n";
-    cout << "==================================================================\n" << RESET;
+    cout << "=========================================================================================\n" << RESET;
 }
 
 void printLine() {
-    cout << "------------------------------------------------------------------\n";
+    cout << "-----------------------------------------------------------------------------------------\n";
 }
 
 // --------------------------------------------------------------------------
@@ -473,6 +480,20 @@ void loadOrders() {
         orders[orderCount].status = jsonGetString(objs[i], "status");
         orders[orderCount].stockDeducted = jsonGetBool(objs[i], "stockDeducted");
         orders[orderCount].startTime = (time_t) jsonGetNumber(objs[i], "startTime");
+        orders[orderCount].paid = jsonGetBool(objs[i], "paid");
+        orders[orderCount].paymentMethod = jsonGetString(objs[i], "paymentMethod");
+        orders[orderCount].fulfillment = jsonGetString(objs[i], "fulfillment");
+        // migration: ไฟล์ข้อมูลเก่าเคยใช้ status = "Paid" แทนการชำระเงิน (ก่อนแยก field paid ออกมา)
+        if (orders[orderCount].status == "Paid") {
+            orders[orderCount].status = "Completed";
+            orders[orderCount].paid = true;
+            if (orders[orderCount].paymentMethod.empty()) orders[orderCount].paymentMethod = "Cash";
+            if (orders[orderCount].fulfillment.empty()) orders[orderCount].fulfillment = "Pickup";
+        } else if (orders[orderCount].status == "PickedUp" && orders[orderCount].paymentMethod.empty()) {
+            orders[orderCount].paid = true;
+            orders[orderCount].paymentMethod = "Cash";
+            orders[orderCount].fulfillment = "Pickup";
+        }
         int num = extractNumber(orders[orderCount].code);
         if (num + 1 > nextOrderId) nextOrderId = num + 1;
         orderCount++;
@@ -494,6 +515,8 @@ void loadSalesHistory() {
         salesHistory[salesCount].price = jsonGetNumber(objs[i], "price");
         salesHistory[salesCount].cash = jsonGetNumber(objs[i], "cash");
         salesHistory[salesCount].change = jsonGetNumber(objs[i], "change");
+        salesHistory[salesCount].paymentMethod = jsonGetString(objs[i], "paymentMethod");
+        if (salesHistory[salesCount].paymentMethod.empty()) salesHistory[salesCount].paymentMethod = "Cash";
         salesCount++;
     }
 }
@@ -565,7 +588,10 @@ void saveOrders() {
         fout << "    \"price\": " << orders[i].price << ",\n";
         fout << "    \"status\": \"" << jsonEscape(orders[i].status) << "\",\n";
         fout << "    \"stockDeducted\": " << (orders[i].stockDeducted ? "true" : "false") << ",\n";
-        fout << "    \"startTime\": " << (long) orders[i].startTime << "\n";
+        fout << "    \"startTime\": " << (long) orders[i].startTime << ",\n";
+        fout << "    \"paid\": " << (orders[i].paid ? "true" : "false") << ",\n";
+        fout << "    \"paymentMethod\": \"" << jsonEscape(orders[i].paymentMethod) << "\",\n";
+        fout << "    \"fulfillment\": \"" << jsonEscape(orders[i].fulfillment) << "\"\n";
         fout << "  }" << (i < orderCount - 1 ? "," : "") << "\n";
     }
     fout << "]\n";
@@ -585,7 +611,8 @@ void saveSalesHistory() {
         fout << fixed << setprecision(2);
         fout << "    \"price\": " << salesHistory[i].price << ",\n";
         fout << "    \"cash\": " << salesHistory[i].cash << ",\n";
-        fout << "    \"change\": " << salesHistory[i].change << "\n";
+        fout << "    \"change\": " << salesHistory[i].change << ",\n";
+        fout << "    \"paymentMethod\": \"" << jsonEscape(salesHistory[i].paymentMethod) << "\"\n";
         fout << "  }" << (i < salesCount - 1 ? "," : "") << "\n";
     }
     fout << "]\n";
@@ -767,7 +794,9 @@ void listOrders() {
              << setw(10) << left << fixed << setprecision(1) << orders[i].weight
              << setw(8) << left << orders[i].hours
              << setw(10) << left << setprecision(2) << orders[i].price
-             << orders[i].status << printingTimeLabel(orders[i]) << "\n";
+             << orders[i].status << printingTimeLabel(orders[i])
+             << (orders[i].paid ? (GREEN " [ชำระแล้ว-" + orders[i].paymentMethod + "]" RESET) : YELLOW " [ยังไม่ชำระ]" RESET)
+             << "\n";
     }
 }
 
@@ -858,10 +887,10 @@ void deleteCustomer() {
     if (key == "0") { cout << YELLOW << "  ยกเลิกการลบ\n" << RESET; return; }
     int idx = findCustomerIndex(key);
     if (idx == -1) { cout << RED << "  ไม่พบรหัสลูกค้านี้\n" << RESET; return; }
-    // กันลบลูกค้าที่ยังมีออเดอร์ค้างอยู่ (ยังไม่ Paid/PickedUp/Cancelled)
+    // กันลบลูกค้าที่ยังมีออเดอร์ค้างอยู่ (ยังไม่ PickedUp/Shipped/Cancelled)
     for (int i = 0; i < orderCount; i++) {
         if (orders[i].customerCode == customers[idx].code &&
-            orders[i].status != "Paid" && orders[i].status != "PickedUp" && orders[i].status != "Cancelled") {
+            orders[i].status != "PickedUp" && orders[i].status != "Shipped" && orders[i].status != "Cancelled") {
             cout << RED << "  ไม่สามารถลบได้ ลูกค้ายังมีออเดอร์ค้างอยู่ (" << orders[i].code << ")\n" << RESET;
             return;
         }
@@ -1089,7 +1118,8 @@ void printerMenu() {
 /* ==========================================================================
    12) ORDER MANAGEMENT  (Insert order = create print job, select material+color,
         check stock, calc price, assign/queue printer)
-   สถานะ: Queued -> Printing -> Completed -> Paid -> PickedUp (หรือ Cancelled)
+   สถานะ: Queued -> Printing -> Completed -> PickedUp / Shipped (หรือ Cancelled)
+   การชำระเงิน (paid/paymentMethod/fulfillment) แยกอิสระจากสถานะข้างบน ชำระออนไลน์ได้ทุกช่วงสถานะ
    หมายเหตุ: หักวัสดุออกจาก Stock "เมื่อเริ่มพิมพ์จริง" (ตอนสถานะเปลี่ยนเป็น Printing)
              ไม่ใช่ตอนสร้างออเดอร์ ถ้าออเดอร์ยังอยู่ในคิว (Queued) จะยังไม่หักสต็อก
    ========================================================================== */
@@ -1176,6 +1206,9 @@ void createOrderCore(int ci) {
     o.price = price;
     o.stockDeducted = false;
     o.startTime = 0; // ยังไม่เริ่มพิมพ์ (จะตั้งค่าตอนมอบหมายเครื่องจริงด้านล่าง)
+    o.paid = false;
+    o.paymentMethod = "";
+    o.fulfillment = "";
 
     string pickedPrinter = "-";
     if (hasIdle) {
@@ -1214,6 +1247,7 @@ void createOrderCore(int ci) {
     saveMaterials();
     savePrinters();
     cout << GREEN << "  สร้างออเดอร์สำเร็จ รหัส: " << o.code << RESET << "\n";
+    cout << CYAN << "  (สามารถชำระเงินออนไลน์ได้ทันทีจากเมนู หรือชำระเงินสดที่ร้านเมื่องานเสร็จก็ได้)\n" << RESET;
 }
 
 void searchOrder() {
@@ -1304,20 +1338,29 @@ void markOrderCompleted() {
     cout << GREEN << "  ออเดอร์ " << orders[oi].code << " พิมพ์เสร็จแล้ว พร้อมส่งมอบ/ชำระเงิน\n" << RESET;
 }
 
-// ยืนยันว่าลูกค้ามารับสินค้าแล้ว (Paid -> PickedUp) ปิดจบวงจรออเดอร์
-void markOrderPickedUp() {
-    printHeader("ยืนยันลูกค้ารับสินค้าแล้ว (Paid -> PickedUp)");
+// ยืนยันว่าส่งมอบสินค้าแล้ว (พิมพ์เสร็จ + ชำระเงินแล้ว -> PickedUp หรือ Shipped ตามวิธีรับสินค้า) ปิดจบวงจรออเดอร์
+void markOrderDelivered() {
+    printHeader("ยืนยันส่งมอบสินค้า (รับที่ร้าน/จัดส่งแล้ว)");
     string key = readLineTrim("  กรอกรหัสออเดอร์ [0=ยกเลิก]: ");
     if (key == "0") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
     int oi = findOrderIndex(key);
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
-    if (orders[oi].status != "Paid") {
-        cout << RED << "  ออเดอร์นี้ยังไม่ได้ชำระเงิน (สถานะ: " << orders[oi].status << ")\n" << RESET;
+    if (orders[oi].status != "Completed") {
+        cout << RED << "  ออเดอร์นี้ยังไม่เสร็จสิ้นการพิมพ์ (สถานะ: " << orders[oi].status << ")\n" << RESET;
         return;
     }
-    orders[oi].status = "PickedUp";
+    if (!orders[oi].paid) {
+        cout << RED << "  ออเดอร์นี้ยังไม่ได้ชำระเงิน กรุณาชำระเงินก่อน\n" << RESET;
+        return;
+    }
+    bool shipping = (orders[oi].fulfillment == "Shipping");
+    orders[oi].status = shipping ? "Shipped" : "PickedUp";
     saveOrders();
-    cout << GREEN << "  ออเดอร์ " << orders[oi].code << " ส่งมอบให้ลูกค้าเรียบร้อยแล้ว (PickedUp)\n" << RESET;
+    if (shipping) {
+        cout << GREEN << "  ออเดอร์ " << orders[oi].code << " จัดส่งให้ลูกค้าเรียบร้อยแล้ว (Shipped)\n" << RESET;
+    } else {
+        cout << GREEN << "  ออเดอร์ " << orders[oi].code << " ส่งมอบให้ลูกค้าเรียบร้อยแล้ว (PickedUp)\n" << RESET;
+    }
 }
 
 void cancelOrder() {
@@ -1326,8 +1369,12 @@ void cancelOrder() {
     if (key == "0") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
     int oi = findOrderIndex(key);
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
-    if (orders[oi].status == "Paid" || orders[oi].status == "PickedUp" || orders[oi].status == "Cancelled") {
+    if (orders[oi].status == "PickedUp" || orders[oi].status == "Shipped" || orders[oi].status == "Cancelled") {
         cout << RED << "  ออเดอร์นี้ไม่สามารถยกเลิกได้ (สถานะ: " << orders[oi].status << ")\n" << RESET;
+        return;
+    }
+    if (orders[oi].paid) {
+        cout << RED << "  ออเดอร์นี้ชำระเงินแล้ว ไม่สามารถยกเลิกได้ กรุณาติดต่อร้านเพื่อขอคืนเงิน\n" << RESET;
         return;
     }
     string conf = readLineTrim("  ยืนยันยกเลิกออเดอร์ " + orders[oi].code + "? (y/n): ");
@@ -1405,7 +1452,9 @@ void customerMyOrders(int ci) {
         any = true;
         cout << "  " << orders[i].code << "  ไฟล์: " << orders[i].fileName
              << "  ราคา: " << fixed << setprecision(2) << orders[i].price << " บาท"
-             << "  สถานะ: " << orders[i].status << printingTimeLabel(orders[i]) << "\n";
+             << "  สถานะ: " << orders[i].status << printingTimeLabel(orders[i])
+             << (orders[i].paid ? (GREEN " [ชำระแล้ว-" + orders[i].paymentMethod + "]" RESET) : YELLOW " [ยังไม่ชำระ]" RESET)
+             << "\n";
     }
     if (!any) cout << "  (คุณยังไม่มีออเดอร์)\n";
 }
@@ -1421,8 +1470,12 @@ void customerCancelOrder(int ci) {
         cout << RED << "  ออเดอร์นี้ไม่ใช่ของคุณ\n" << RESET;
         return;
     }
-    if (orders[oi].status == "Paid" || orders[oi].status == "PickedUp" || orders[oi].status == "Cancelled") {
+    if (orders[oi].status == "PickedUp" || orders[oi].status == "Shipped" || orders[oi].status == "Cancelled") {
         cout << RED << "  ออเดอร์นี้ไม่สามารถยกเลิกได้ (สถานะ: " << orders[oi].status << ")\n" << RESET;
+        return;
+    }
+    if (orders[oi].paid) {
+        cout << RED << "  ออเดอร์นี้ชำระเงินแล้ว ไม่สามารถยกเลิกได้ กรุณาติดต่อร้านเพื่อขอคืนเงิน\n" << RESET;
         return;
     }
     string conf = readLineTrim("  ยืนยันยกเลิกออเดอร์ " + orders[oi].code + "? (y/n): ");
@@ -1444,12 +1497,14 @@ void customerKioskMenu() {
         cout << "  1. สร้างออเดอร์พิมพ์งานใหม่\n";
         cout << "  2. ดูสถานะออเดอร์ของฉัน\n";
         cout << "  3. ยกเลิกออเดอร์ของฉัน (เฉพาะที่ยังไม่ชำระเงิน/รับของ)\n";
+        cout << "  4. ชำระเงินออนไลน์\n";
         cout << "  0. ออกจากระบบ (กลับเมนูเลือกโหมด)\n";
-        int c = readIntInRange("\n  เลือกเมนู: ", 0, 3);
+        int c = readIntInRange("\n  เลือกเมนู: ", 0, 4);
         clearScreen();
         if (c == 1) customerCreateOrder(ci);
         else if (c == 2) customerMyOrders(ci);
         else if (c == 3) customerCancelOrder(ci);
+        else if (c == 4) customerPayOnline(ci);
         else if (c == 0) return;
         pause();
     }
@@ -1467,9 +1522,10 @@ void orderMenu() {
         cout << "  5. ดูสถานะคิว/เครื่องพิมพ์ (พร้อมเวลาที่เหลือ)\n";
         cout << "  6. ประมวลผลคิว (จับคู่งานรอกับเครื่องว่าง)\n";
         cout << "  7. แจ้งพิมพ์งานเสร็จก่อนเวลา (บังคับ Completed ด้วยตนเอง)\n";
-        cout << "  8. ยืนยันลูกค้ารับสินค้าแล้ว (Paid -> PickedUp)\n";
+        cout << "  8. ยืนยันส่งมอบสินค้า (รับที่ร้าน/จัดส่งแล้ว)\n";
+        cout << "  9. ชำระเงินออนไลน์ (แทนลูกค้า)\n";
         cout << "  0. กลับเมนูหลัก\n";
-        int c = readIntInRange("\n  เลือกเมนู: ", 0, 8);
+        int c = readIntInRange("\n  เลือกเมนู: ", 0, 9);
         clearScreen();
         if (c == 1) listOrders();
         else if (c == 2) searchOrder();
@@ -1478,7 +1534,8 @@ void orderMenu() {
         else if (c == 5) queueStatusView();
         else if (c == 6) processQueue();
         else if (c == 7) markOrderCompleted();
-        else if (c == 8) markOrderPickedUp();
+        else if (c == 8) markOrderDelivered();
+        else if (c == 9) ownerPayOnline();
         else if (c == 0) return;
         pause();
     }
@@ -1487,10 +1544,18 @@ void orderMenu() {
 /* ==========================================================================
    13) POS -- CHECKOUT / RECEIPT
    ========================================================================== */
-void printReceipt(Order &o, Customer &c, Material &m, double cash, double change) {
+// เส้นขอบใบเสร็จ - ใช้ความกว้างเท่ากับ printLine() (66 ตัวอักษร ไม่มีเว้นวรรคนำหน้า)
+// เพื่อให้ทุกเส้นในใบเสร็จกว้างเท่ากันพอดีตอนพิมพ์ออกเครื่องพิมพ์สลิป
+void printReceiptBorder() {
+    cout << "******************************************************************\n";
+}
+
+void printReceipt(Order &o, Customer &c, Material &m, const string &paymentMethod,
+                   const string &fulfillment, double cash, double change) {
     time_t now = time(0);
     char buf[64];
     strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M", localtime(&now));
+    bool shipping = (fulfillment == "Shipping");
 
     cout << "\n" << CYAN;
     cout << "     ****************************************\n";
@@ -1499,15 +1564,24 @@ void printReceipt(Order &o, Customer &c, Material &m, double cash, double change
     cout << "     วันที่       : " << buf << "\n";
     cout << "     เลขที่ออเดอร์ : " << o.code << "\n";
     cout << "     ลูกค้า       : " << c.name << " (" << c.phone << ")\n";
-    printLine();
+    cout << CYAN << "     ****************************************\n" << RESET;
     cout << "     ไฟล์งาน      : " << o.fileName << "\n";
     cout << "     รายการ       : " << m.name << " สี " << m.color << "\n";
     cout << "     น้ำหนัก      : " << fixed << setprecision(1) << o.weight << " กรัม\n";
     cout << "     เวลาพิมพ์    : " << setprecision(2) << o.hours << " ชม.\n";
-    printLine();
+    cout << CYAN << "     ****************************************\n" << RESET;
     cout << "     ยอดรวม       : " << setprecision(2) << o.price << " บาท\n";
-    cout << "     รับเงินสด    : " << cash << " บาท\n";
-    cout << GREEN << "     เงินทอน      : " << change << " บาท" << RESET << "\n";
+    cout << "     ชำระโดย      : " << (paymentMethod == "Online" ? "ชำระเงินออนไลน์" : "เงินสด") << "\n";
+    if (paymentMethod == "Online") {
+        cout << GREEN << "     สถานะ        : ชำระเงินเรียบร้อยแล้ว" << RESET << "\n";
+    } else {
+        cout << "     รับเงินสด    : " << fixed << setprecision(2) << cash << " บาท\n";
+        cout << GREEN << "     เงินทอน      : " << change << " บาท" << RESET << "\n";
+    }
+    cout << "     รับสินค้าโดย : " << (shipping ? "จัดส่ง" : "รับที่ร้าน") << "\n";
+    if (shipping) {
+        cout << "     ที่อยู่จัดส่ง : " << c.address << "\n";
+    }
     cout << CYAN << "     ****************************************\n";
     cout << "            ขอบคุณที่ใช้บริการค่ะ/ครับ\n";
     cout << "     ****************************************\n" << RESET;
@@ -1517,22 +1591,23 @@ void posCheckout() {
     autoCompletePrinting();
     printHeader("POS - ชำระเงิน / ออกใบเสร็จ");
     cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
-    cout << BOLD << "  ออเดอร์ที่พร้อมชำระเงิน (สถานะ Completed):\n" << RESET;
+    cout << BOLD << "  ออเดอร์ที่พร้อมชำระเงินสด (สถานะ Completed และยังไม่ได้ชำระเงิน):\n" << RESET;
     bool any = false;
     for (int i = 0; i < orderCount; i++) {
-        if (orders[i].status == "Completed") {
+        if (orders[i].status == "Completed" && !orders[i].paid) {
             cout << "   - " << orders[i].code << "  ราคา: " << fixed << setprecision(2)
                  << orders[i].price << " บาท\n";
             any = true;
         }
     }
-    if (!any) cout << YELLOW << "   (ยังไม่มีออเดอร์พร้อมชำระเงิน)\n" << RESET;
+    if (!any) cout << YELLOW << "   (ยังไม่มีออเดอร์พร้อมชำระเงินสด)\n" << RESET;
 
     bool anyPrinting = false;
     for (int i = 0; i < orderCount; i++) {
         if (orders[i].status == "Printing") {
-            if (!anyPrinting) { cout << "\n" << BOLD << "  ออเดอร์ที่กำลังพิมพ์อยู่ (ยังชำระเงินไม่ได้):\n" << RESET; anyPrinting = true; }
-            cout << "   - " << orders[i].code << YELLOW << printingTimeLabel(orders[i]) << RESET << "\n";
+            if (!anyPrinting) { cout << "\n" << BOLD << "  ออเดอร์ที่กำลังพิมพ์อยู่ (ยังรับสินค้าไม่ได้):\n" << RESET; anyPrinting = true; }
+            cout << "   - " << orders[i].code << YELLOW << printingTimeLabel(orders[i]) << RESET
+                 << (orders[i].paid ? GREEN " [ชำระเงินออนไลน์แล้ว]" RESET : "") << "\n";
         }
     }
 
@@ -1544,6 +1619,10 @@ void posCheckout() {
     if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
     if (orders[oi].status != "Completed") {
         cout << RED << "  ออเดอร์นี้ยังไม่พร้อมชำระเงิน (สถานะ: " << orders[oi].status << ")\n" << RESET;
+        return;
+    }
+    if (orders[oi].paid) {
+        cout << RED << "  ออเดอร์นี้ชำระเงินไปแล้ว (" << orders[oi].paymentMethod << ")\n" << RESET;
         return;
     }
 
@@ -1565,10 +1644,12 @@ void posCheckout() {
     }
     double change = cash - orders[oi].price;
 
-    orders[oi].status = "Paid";
+    orders[oi].paid = true;
+    orders[oi].paymentMethod = "Cash";
+    orders[oi].fulfillment = "Pickup"; // ชำระเงินสดถือว่ารับที่ร้านเสมอ
     saveOrders();
 
-    printReceipt(orders[oi], customers[ci], materials[mi], cash, change);
+    printReceipt(orders[oi], customers[ci], materials[mi], "Cash", "Pickup", cash, change);
 
     time_t now = time(0);
     char buf[64];
@@ -1583,7 +1664,134 @@ void posCheckout() {
     rec.price = orders[oi].price;
     rec.cash = cash;
     rec.change = change;
+    rec.paymentMethod = "Cash";
     appendSalesHistory(rec);
+}
+
+/* --------------------------------------------------------------------------
+   ชำระเงินออนไลน์ - ชำระได้ทุกช่วงสถานะที่ยังไม่ Cancelled/PickedUp/Shipped และยังไม่ได้ชำระ
+   (แยกอิสระจากสถานะการพิมพ์ oorder.status เพื่อให้จ่ายได้ตั้งแต่ก่อนเริ่มพิมพ์จนถึงพิมพ์เสร็จแล้ว)
+   -------------------------------------------------------------------------- */
+void payOnlineCore(int oi) {
+    if (orders[oi].paid) {
+        cout << RED << "  ออเดอร์นี้ชำระเงินไปแล้ว (" << orders[oi].paymentMethod << ")\n" << RESET;
+        return;
+    }
+    if (orders[oi].status == "Cancelled" || orders[oi].status == "PickedUp" || orders[oi].status == "Shipped") {
+        cout << RED << "  ออเดอร์นี้ไม่สามารถชำระเงินได้ (สถานะ: " << orders[oi].status << ")\n" << RESET;
+        return;
+    }
+
+    int ci = findCustomerIndex(orders[oi].customerCode);
+    int mi = findMaterialIndex(orders[oi].materialCode);
+    if (ci == -1 || mi == -1) { cout << RED << "  ข้อมูลลูกค้า/วัสดุไม่สมบูรณ์\n" << RESET; return; }
+
+    cout << "  ออเดอร์: " << orders[oi].code << "  ยอดที่ต้องชำระ: " << fixed << setprecision(2)
+         << orders[oi].price << " บาท\n";
+
+    cout << "\n  เลือกวิธีรับสินค้า:\n";
+    cout << "   1. รับที่ร้าน\n";
+    cout << "   2. จัดส่ง\n";
+    int fc = readIntInRange("  เลือก [0=ยกเลิก]: ", 0, 2);
+    if (fc == 0) { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
+    string fulfillment = (fc == 2) ? "Shipping" : "Pickup";
+
+    if (fulfillment == "Shipping") {
+        cout << "  ที่อยู่จัดส่งปัจจุบัน: "
+             << (customers[ci].address.empty() ? "(ยังไม่มีข้อมูล)" : customers[ci].address) << "\n";
+        string newAddr = readLineTrim("  กรอกที่อยู่จัดส่ง (Enter ว่าง = ใช้ที่อยู่เดิม, 0=ยกเลิก): ");
+        if (newAddr == "0") { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
+        if (!newAddr.empty()) {
+            customers[ci].address = newAddr;
+            saveCustomers();
+        }
+        if (customers[ci].address.empty()) {
+            cout << RED << "  ต้องมีที่อยู่จัดส่งก่อนชำระเงินแบบจัดส่ง\n" << RESET;
+            return;
+        }
+    }
+
+    // จำลองขั้นตอนชำระเงินออนไลน์ (เช่น สแกน PromptPay QR) - ระบบจริงให้เชื่อมต่อ Payment Gateway ตรงนี้
+    cout << YELLOW << "\n  [จำลอง] กรุณาชำระเงินผ่านช่องทางออนไลน์ (เช่น สแกน QR / โอนเงิน)...\n" << RESET;
+    string conf = readLineTrim("  ยืนยันว่าได้รับเงินโอนแล้ว? (y/n, หรือ 0=ยกเลิก): ");
+    if (conf == "0" || toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
+
+    orders[oi].paid = true;
+    orders[oi].paymentMethod = "Online";
+    orders[oi].fulfillment = fulfillment;
+    saveOrders();
+
+    printReceipt(orders[oi], customers[ci], materials[mi], "Online", fulfillment, 0.0, 0.0);
+
+    time_t now = time(0);
+    char buf[64];
+    strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M", localtime(&now));
+
+    SalesRecord rec;
+    rec.date = buf;
+    rec.orderCode = orders[oi].code;
+    rec.customerName = customers[ci].name;
+    rec.materialName = materials[mi].name;
+    rec.color = materials[mi].color;
+    rec.price = orders[oi].price;
+    rec.cash = 0;
+    rec.change = 0;
+    rec.paymentMethod = "Online";
+    appendSalesHistory(rec);
+
+    cout << GREEN << "  ชำระเงินออนไลน์สำเร็จ (" << (fulfillment == "Shipping" ? "จัดส่ง" : "รับที่ร้าน") << ")\n" << RESET;
+}
+
+// เมนูฝั่งเจ้าของ/พนักงาน: เลือกออเดอร์ของลูกค้าคนใดก็ได้มาชำระเงินออนไลน์แทน
+void ownerPayOnline() {
+    autoCompletePrinting();
+    printHeader("ชำระเงินออนไลน์ (เจ้าของ/พนักงาน)");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
+    bool any = false;
+    for (int i = 0; i < orderCount; i++) {
+        if (!orders[i].paid && orders[i].status != "Cancelled" &&
+            orders[i].status != "PickedUp" && orders[i].status != "Shipped") {
+            cout << "   - " << orders[i].code << "  ลูกค้า: " << orders[i].customerCode
+                 << "  ราคา: " << fixed << setprecision(2) << orders[i].price
+                 << " บาท  สถานะ: " << orders[i].status << "\n";
+            any = true;
+        }
+    }
+    if (!any) { cout << YELLOW << "   (ไม่มีออเดอร์ที่รอชำระเงิน)\n" << RESET; return; }
+
+    string key = readLineTrim("\n  กรอกรหัสออเดอร์ที่จะชำระเงินออนไลน์ [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
+    int oi = findOrderIndex(key);
+    if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
+    payOnlineCore(oi);
+}
+
+// เมนูฝั่งลูกค้า (self-service): ชำระเงินออนไลน์ได้เฉพาะออเดอร์ของตัวเองเท่านั้น
+void customerPayOnline(int ci) {
+    autoCompletePrinting();
+    printHeader("ชำระเงินออนไลน์สำหรับออเดอร์ของฉัน");
+    cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
+    bool any = false;
+    for (int i = 0; i < orderCount; i++) {
+        if (orders[i].customerCode != customers[ci].code) continue;
+        if (!orders[i].paid && orders[i].status != "Cancelled" &&
+            orders[i].status != "PickedUp" && orders[i].status != "Shipped") {
+            cout << "   - " << orders[i].code << "  ราคา: " << fixed << setprecision(2) << orders[i].price
+                 << " บาท  สถานะ: " << orders[i].status << "\n";
+            any = true;
+        }
+    }
+    if (!any) { cout << YELLOW << "   (คุณไม่มีออเดอร์ที่รอชำระเงิน)\n" << RESET; return; }
+
+    string key = readLineTrim("\n  กรอกรหัสออเดอร์ที่จะชำระเงินออนไลน์ [0=ยกเลิก]: ");
+    if (key == "0") { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
+    int oi = findOrderIndex(key);
+    if (oi == -1) { cout << RED << "  ไม่พบออเดอร์นี้\n" << RESET; return; }
+    if (orders[oi].customerCode != customers[ci].code) {
+        cout << RED << "  ออเดอร์นี้ไม่ใช่ของคุณ\n" << RESET;
+        return;
+    }
+    payOnlineCore(oi);
 }
 
 /* ==========================================================================
@@ -1594,13 +1802,13 @@ void showSalesHistory() {
     if (salesCount == 0) { cout << "  (ยังไม่มีประวัติการขาย)\n"; return; }
     double total = 0;
     cout << padRight("วันที่", 17) << padRight("ออเดอร์", 8) << padRight("ลูกค้า", 16)
-         << padRight("วัสดุ", 10) << padRight("สี", 8) << "ยอด\n";
+         << padRight("วัสดุ", 10) << padRight("สี", 8) << padRight("ชำระโดย", 10) << "ยอด\n";
     printLine();
     for (int i = 0; i < salesCount; i++) {
         cout << padRight(salesHistory[i].date, 17) << padRight(salesHistory[i].orderCode, 8)
              << padRight(salesHistory[i].customerName, 16) << padRight(salesHistory[i].materialName, 10)
-             << padRight(salesHistory[i].color, 8) << fixed << setprecision(2)
-             << salesHistory[i].price << "\n";
+             << padRight(salesHistory[i].color, 8) << padRight(salesHistory[i].paymentMethod, 10)
+             << fixed << setprecision(2) << salesHistory[i].price << "\n";
         total += salesHistory[i].price;
     }
     printLine();
