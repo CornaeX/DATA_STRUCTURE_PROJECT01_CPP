@@ -78,6 +78,7 @@ struct Order {
     double price;     // ราคารวม
     string status;    // Queued / Printing / Completed / Paid / PickedUp / Cancelled
     bool stockDeducted; // true เมื่อหักสต็อกไปแล้ว (ตอนเริ่มพิมพ์จริง) ใช้ตัดสินใจตอนคืนสต็อก
+    time_t startTime;  // เวลาที่เริ่มพิมพ์จริง (Unix timestamp) ใช้คำนวณเวลาที่เหลือ / เช็คว่าพิมพ์เสร็จหรือยัง (0 = ยังไม่เริ่ม)
 };
 
 struct SalesRecord {
@@ -158,6 +159,8 @@ bool containsIgnoreCase(const string &haystack, const string &needle) {
     return h.find(n) != string::npos;
 }
 
+void saveAll(); // forward declaration (นิยามจริงอยู่ด้านล่าง) ใช้บันทึกข้อมูลก่อนออกเมื่อเจอ EOF ระหว่างรับข้อมูล
+
 int readIntInRange(const string &prompt, int lo, int hi) {
     int v;
     while (true) {
@@ -165,6 +168,11 @@ int readIntInRange(const string &prompt, int lo, int hi) {
         if (cin >> v && v >= lo && v <= hi) {
             cin.ignore(numeric_limits<streamsize>::max(), '\n');
             return v;
+        }
+        if (cin.eof()) {
+            cout << RED << "\n  ไม่มีข้อมูลนำเข้าเหลือแล้ว (EOF) กำลังบันทึกและออกจากโปรแกรม...\n" << RESET;
+            saveAll();
+            exit(0);
         }
         cout << RED << "  ค่าไม่ถูกต้อง กรุณากรอกใหม่ (" << lo << "-" << hi << ")\n" << RESET;
         cin.clear();
@@ -180,6 +188,11 @@ double readPositiveDouble(const string &prompt) {
             cin.ignore(numeric_limits<streamsize>::max(), '\n');
             return v;
         }
+        if (cin.eof()) {
+            cout << RED << "\n  ไม่มีข้อมูลนำเข้าเหลือแล้ว (EOF) กำลังบันทึกและออกจากโปรแกรม...\n" << RESET;
+            saveAll();
+            exit(0);
+        }
         cout << RED << "  กรุณากรอกตัวเลขที่มากกว่า 0\n" << RESET;
         cin.clear();
         cin.ignore(numeric_limits<streamsize>::max(), '\n');
@@ -191,7 +204,11 @@ bool readPositiveDoubleCancelable(const string &prompt, double &result) {
     string line;
     while (true) {
         cout << prompt;
-        getline(cin, line);
+        if (!getline(cin, line)) {
+            cout << RED << "\n  ไม่มีข้อมูลนำเข้าเหลือแล้ว (EOF) กำลังบันทึกและออกจากโปรแกรม...\n" << RESET;
+            saveAll();
+            exit(0);
+        }
         line = trim(line);
         if (line == "0") return false; // ผู้ใช้ขอยกเลิก
         stringstream ss(line);
@@ -207,7 +224,11 @@ bool readPositiveDoubleCancelable(const string &prompt, double &result) {
 string readLineTrim(const string &prompt) {
     cout << prompt;
     string s;
-    getline(cin, s);
+    if (!getline(cin, s)) {
+        cout << RED << "\n  ไม่มีข้อมูลนำเข้าเหลือแล้ว (EOF) กำลังบันทึกและออกจากโปรแกรม...\n" << RESET;
+        saveAll();
+        exit(0);
+    }
     return trim(s);
 }
 
@@ -401,6 +422,7 @@ void loadOrders() {
         orders[orderCount].price = jsonGetNumber(objs[i], "price");
         orders[orderCount].status = jsonGetString(objs[i], "status");
         orders[orderCount].stockDeducted = jsonGetBool(objs[i], "stockDeducted");
+        orders[orderCount].startTime = (time_t) jsonGetNumber(objs[i], "startTime");
         int num = extractNumber(orders[orderCount].code);
         if (num + 1 > nextOrderId) nextOrderId = num + 1;
         orderCount++;
@@ -492,7 +514,8 @@ void saveOrders() {
         fout << "    \"hours\": " << orders[i].hours << ",\n";
         fout << "    \"price\": " << orders[i].price << ",\n";
         fout << "    \"status\": \"" << jsonEscape(orders[i].status) << "\",\n";
-        fout << "    \"stockDeducted\": " << (orders[i].stockDeducted ? "true" : "false") << "\n";
+        fout << "    \"stockDeducted\": " << (orders[i].stockDeducted ? "true" : "false") << ",\n";
+        fout << "    \"startTime\": " << (long) orders[i].startTime << "\n";
         fout << "  }" << (i < orderCount - 1 ? "," : "") << "\n";
     }
     fout << "]\n";
@@ -589,7 +612,70 @@ void listMaterials() {
     }
 }
 
+// แปลงจำนวนชั่วโมง (double) เป็นข้อความ "Xชม Yนาที" อ่านง่าย
+string formatDuration(double hours) {
+    if (hours < 0) hours = 0;
+    int totalMinutes = (int) (hours * 60.0 + 0.5);
+    int h = totalMinutes / 60;
+    int m = totalMinutes % 60;
+    stringstream ss;
+    if (h > 0) ss << h << "ชม ";
+    ss << m << "นาที";
+    return ss.str();
+}
+
+// เวลาที่พิมพ์ไปแล้ว (ชั่วโมง) นับจากเวลาที่เริ่มพิมพ์จริงจนถึงตอนนี้
+double elapsedHours(const Order &o) {
+    if (o.startTime == 0) return 0.0;
+    double secs = difftime(time(0), o.startTime);
+    if (secs < 0) secs = 0;
+    return secs / 3600.0;
+}
+
+// เวลาที่เหลือโดยประมาณ (ชั่วโมง) ของออเดอร์ที่กำลังพิมพ์อยู่ ไม่ต่ำกว่า 0
+double remainingHours(const Order &o) {
+    double left = o.hours - elapsedHours(o);
+    if (left < 0) left = 0;
+    return left;
+}
+
+// ข้อความสรุปเวลาสำหรับออเดอร์ที่สถานะ Printing เช่น "กำลังพิมพ์ - เหลืออีก 2ชม 15นาที"
+// สำหรับสถานะอื่นคืนค่าว่าง (ไม่ต้องแสดงเวลาที่เหลือ)
+string printingTimeLabel(const Order &o) {
+    if (o.status != "Printing") return "";
+    double left = remainingHours(o);
+    if (left <= 0.0) return " (ใกล้เสร็จ กำลังปรับสถานะ...)";
+    return " (เหลืออีก " + formatDuration(left) + ")";
+}
+
+// ตรวจสอบออเดอร์ที่สถานะ "Printing" ทุกตัว ถ้าเวลาผ่านไปครบตามเวลาประมาณการแล้ว
+// จะปรับสถานะเป็น "Completed" และคืนเครื่องพิมพ์เป็น Idle ให้อัตโนมัติ โดยไม่ต้องกดยืนยันเอง
+// เรียกใช้ทุกครั้งที่เข้าเมนูที่เกี่ยวข้อง เพื่อให้สถานะอัปเดตตามเวลาจริงเสมอ
+void autoCompletePrinting() {
+    bool changed = false;
+    for (int i = 0; i < orderCount; i++) {
+        if (orders[i].status != "Printing") continue;
+        if (elapsedHours(orders[i]) < orders[i].hours) continue;
+
+        orders[i].status = "Completed";
+        int pi = findPrinterIndex(orders[i].printerCode);
+        if (pi != -1) {
+            printers[pi].status = "Idle";
+            printers[pi].currentOrder = "-";
+        }
+        cout << GREEN << "  [อัตโนมัติ] ออเดอร์ " << orders[i].code
+             << " พิมพ์ครบเวลาประมาณการแล้ว -> เปลี่ยนสถานะเป็น Completed (พร้อมส่งมอบ/ชำระเงิน)\n" << RESET;
+        changed = true;
+    }
+    if (changed) {
+        saveOrders();
+        savePrinters();
+    }
+}
+
+
 void listPrinters() {
+    autoCompletePrinting();
     printHeader("รายการเครื่องพิมพ์ทั้งหมด");
     if (printerCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
     cout << left << setw(8) << "รหัส" << setw(16) << "ชื่อเครื่อง" << setw(10) << "ประเภท"
@@ -601,11 +687,17 @@ void listPrinters() {
         if (printers[i].status == "Idle") cout << GREEN;
         else if (printers[i].status == "Printing") cout << YELLOW;
         else cout << RED;
-        cout << setw(14) << printers[i].status << RESET << printers[i].currentOrder << "\n";
+        cout << setw(14) << printers[i].status << RESET << printers[i].currentOrder;
+        if (printers[i].status == "Printing") {
+            int oi = findOrderIndex(printers[i].currentOrder);
+            if (oi != -1) cout << printingTimeLabel(orders[oi]);
+        }
+        cout << "\n";
     }
 }
 
 void listOrders() {
+    autoCompletePrinting();
     printHeader("รายการออเดอร์ทั้งหมด");
     if (orderCount == 0) { cout << "  (ไม่มีข้อมูล)\n"; return; }
     cout << left << setw(8) << "รหัส" << setw(8) << "ลูกค้า" << setw(8) << "วัสดุ"
@@ -619,7 +711,7 @@ void listOrders() {
              << setw(10) << fixed << setprecision(1) << orders[i].weight
              << setw(8) << orders[i].hours
              << setw(10) << setprecision(2) << orders[i].price
-             << orders[i].status << "\n";
+             << orders[i].status << printingTimeLabel(orders[i]) << "\n";
     }
 }
 
@@ -880,6 +972,7 @@ void setPrinterMaintenance() {
 
 void printerMenu() {
     while (true) {
+        autoCompletePrinting();
         clearScreen();
         printHeader("จัดการเครื่องพิมพ์");
         cout << "  1. แสดงรายการเครื่องพิมพ์ทั้งหมด\n";
@@ -979,6 +1072,7 @@ void createOrder() {
     o.hours = hours;
     o.price = price;
     o.stockDeducted = false;
+    o.startTime = 0; // ยังไม่เริ่มพิมพ์ (จะตั้งค่าตอนมอบหมายเครื่องจริงด้านล่าง)
 
     string pickedPrinter = "-";
     if (hasIdle) {
@@ -995,14 +1089,16 @@ void createOrder() {
     }
 
     if (pi != -1) {
-        // มอบหมายเครื่องพิมพ์ทันที -> เริ่มพิมพ์จริง -> หักสต็อกตอนนี้
+        // มอบหมายเครื่องพิมพ์ทันที -> เริ่มพิมพ์จริง -> หักสต็อกตอนนี้ -> เริ่มจับเวลานับถอยหลังอัตโนมัติ
         o.printerCode = printers[pi].code;
         o.status = "Printing";
         o.stockDeducted = true;
+        o.startTime = time(0);
         printers[pi].status = "Printing";
         printers[pi].currentOrder = o.code;
         materials[mi].stockGram -= weight;
-        cout << GREEN << "  มอบหมายให้เครื่อง " << printers[pi].name << " เริ่มพิมพ์ทันที (หักสต็อกวัสดุแล้ว)\n" << RESET;
+        cout << GREEN << "  มอบหมายให้เครื่อง " << printers[pi].name << " เริ่มพิมพ์ทันที (หักสต็อกวัสดุแล้ว) "
+             << "ประมาณเสร็จใน " << formatDuration(hours) << " (ระบบจะเปลี่ยนสถานะเป็น Completed ให้อัตโนมัติ)\n" << RESET;
     } else {
         // ยังไม่มีเครื่องว่าง หรือผู้ใช้ไม่เลือก -> เข้าคิว ยังไม่หักสต็อก
         o.printerCode = "-";
@@ -1044,6 +1140,7 @@ void searchOrder() {
 
 // ประมวลผลคิว: ดึงออเดอร์ที่สถานะ Queued ไปให้เครื่องที่ว่าง (Idle) และหักสต็อก ณ จุดนี้ (เริ่มพิมพ์จริง)
 void processQueue() {
+    autoCompletePrinting();
     printHeader("ประมวลผลคิวงานพิมพ์ (จับคู่ออเดอร์ที่รอกับเครื่องว่าง)");
     int assigned = 0;
     for (int i = 0; i < orderCount; i++) {
@@ -1059,11 +1156,13 @@ void processQueue() {
                 orders[i].printerCode = printers[p].code;
                 orders[i].status = "Printing";
                 orders[i].stockDeducted = true;
+                orders[i].startTime = time(0);
                 printers[p].status = "Printing";
                 printers[p].currentOrder = orders[i].code;
                 materials[mi].stockGram -= orders[i].weight;
                 cout << GREEN << "  ออเดอร์ " << orders[i].code << " -> เครื่อง "
-                     << printers[p].name << " (หักสต็อกวัสดุแล้ว)" << RESET << "\n";
+                     << printers[p].name << " (หักสต็อกวัสดุแล้ว) ประมาณเสร็จใน "
+                     << formatDuration(orders[i].hours) << RESET << "\n";
                 assigned++;
                 break;
             }
@@ -1077,7 +1176,9 @@ void processQueue() {
 
 // ทำเครื่องหมายว่าออเดอร์พิมพ์เสร็จแล้ว (Printing -> Completed) และคืนเครื่องเป็น Idle
 void markOrderCompleted() {
-    printHeader("แจ้งพิมพ์งานเสร็จสิ้น (Printing -> Completed)");
+    printHeader("แจ้งพิมพ์งานเสร็จก่อนเวลา (บังคับ Printing -> Completed ด้วยตนเอง)");
+    cout << YELLOW << "  หมายเหตุ: ปกติระบบจะเปลี่ยนสถานะเป็น Completed ให้อัตโนมัติเมื่อครบเวลาประมาณการ\n"
+         << "  ใช้เมนูนี้เฉพาะกรณีพิมพ์เสร็จก่อนเวลาที่ประมาณไว้เท่านั้น\n" << RESET;
     string key = readLineTrim("  กรอกรหัสออเดอร์ [0=ยกเลิก]: ");
     if (key == "0") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
     int oi = findOrderIndex(key);
@@ -1086,6 +1187,9 @@ void markOrderCompleted() {
         cout << RED << "  ออเดอร์นี้ไม่ได้อยู่ในสถานะกำลังพิมพ์\n" << RESET;
         return;
     }
+    cout << "  เวลาที่เหลือตามประมาณการ: " << formatDuration(remainingHours(orders[oi])) << "\n";
+    string conf = readLineTrim("  ยืนยันว่าพิมพ์เสร็จแล้วจริง? (y/n): ");
+    if (toUpperStr(conf) != "Y") { cout << YELLOW << "  ยกเลิกการดำเนินการ\n" << RESET; return; }
     orders[oi].status = "Completed";
     int pi = findPrinterIndex(orders[oi].printerCode);
     if (pi != -1) {
@@ -1146,6 +1250,7 @@ void cancelOrder() {
 }
 
 void queueStatusView() {
+    autoCompletePrinting();
     printHeader("สถานะคิวงานพิมพ์ (ตามเครื่องพิมพ์)");
     for (int p = 0; p < printerCount; p++) {
         cout << BOLD << "  เครื่อง " << printers[p].code << " (" << printers[p].name << ") - "
@@ -1154,7 +1259,8 @@ void queueStatusView() {
         for (int i = 0; i < orderCount; i++) {
             if (orders[i].printerCode == printers[p].code &&
                 (orders[i].status == "Printing")) {
-                cout << "     -> กำลังพิมพ์ออเดอร์: " << orders[i].code << "\n";
+                cout << "     -> กำลังพิมพ์ออเดอร์: " << orders[i].code
+                     << YELLOW << printingTimeLabel(orders[i]) << RESET << "\n";
                 any = true;
             }
         }
@@ -1174,15 +1280,16 @@ void queueStatusView() {
 
 void orderMenu() {
     while (true) {
+        autoCompletePrinting();
         clearScreen();
         printHeader("จัดการออเดอร์งานพิมพ์");
         cout << "  1. แสดงออเดอร์ทั้งหมด\n";
         cout << "  2. ค้นหาออเดอร์\n";
         cout << "  3. สร้างออเดอร์ใหม่\n";
         cout << "  4. ยกเลิกออเดอร์\n";
-        cout << "  5. ดูสถานะคิว/เครื่องพิมพ์\n";
+        cout << "  5. ดูสถานะคิว/เครื่องพิมพ์ (พร้อมเวลาที่เหลือ)\n";
         cout << "  6. ประมวลผลคิว (จับคู่งานรอกับเครื่องว่าง)\n";
-        cout << "  7. แจ้งพิมพ์งานเสร็จสิ้น (พร้อมส่งมอบ)\n";
+        cout << "  7. แจ้งพิมพ์งานเสร็จก่อนเวลา (บังคับ Completed ด้วยตนเอง)\n";
         cout << "  8. ยืนยันลูกค้ารับสินค้าแล้ว (Paid -> PickedUp)\n";
         cout << "  0. กลับเมนูหลัก\n";
         int c = readIntInRange("\n  เลือกเมนู: ", 0, 8);
@@ -1230,6 +1337,7 @@ void printReceipt(Order &o, Customer &c, Material &m, double cash, double change
 }
 
 void posCheckout() {
+    autoCompletePrinting();
     printHeader("POS - ชำระเงิน / ออกใบเสร็จ");
     cout << YELLOW << "  (พิมพ์ 0 แล้ว Enter ในช่องใดก็ได้ เพื่อยกเลิกและกลับเมนูก่อนหน้า)\n" << RESET;
     cout << BOLD << "  ออเดอร์ที่พร้อมชำระเงิน (สถานะ Completed):\n" << RESET;
@@ -1241,7 +1349,17 @@ void posCheckout() {
             any = true;
         }
     }
-    if (!any) { cout << YELLOW << "  ไม่มีออเดอร์ที่พร้อมชำระเงินขณะนี้\n" << RESET; return; }
+    if (!any) cout << YELLOW << "   (ยังไม่มีออเดอร์พร้อมชำระเงิน)\n" << RESET;
+
+    bool anyPrinting = false;
+    for (int i = 0; i < orderCount; i++) {
+        if (orders[i].status == "Printing") {
+            if (!anyPrinting) { cout << "\n" << BOLD << "  ออเดอร์ที่กำลังพิมพ์อยู่ (ยังชำระเงินไม่ได้):\n" << RESET; anyPrinting = true; }
+            cout << "   - " << orders[i].code << YELLOW << printingTimeLabel(orders[i]) << RESET << "\n";
+        }
+    }
+
+    if (!any) return;
 
     string key = readLineTrim("\n  กรอกรหัสออเดอร์ที่จะชำระเงิน [0=ยกเลิก]: ");
     if (key == "0") { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
@@ -1362,6 +1480,7 @@ int main() {
     seedSamplePrintersIfEmpty();
 
     while (true) {
+        autoCompletePrinting();
         clearScreen();
         cout << BLUE << BOLD;
         cout << " ██████╗ ██████╗     ██████╗ ██████╗ ██╗███╗   ██╗████████╗\n";
