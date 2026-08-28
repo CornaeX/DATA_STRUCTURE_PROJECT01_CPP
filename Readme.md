@@ -80,8 +80,8 @@ All data is persisted as plain JSON files in the working directory, read/written
 ## Build & Run
 
 ```bash
-git clone <your-repo-url>
-cd <repo-folder>
+git clone https://github.com/CornaeX/DATA_STRUCTURE_PROJECT01_CPP.git
+cd DATA_STRUCTURE_PROJECT01_CPP
 make
 ./shop
 ```
