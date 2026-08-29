@@ -12,12 +12,19 @@
 /* ---- ฝั่งเจ้าของ/พนักงาน ---- */
 void createOrder();
 void searchOrder();
-void processQueue();          // จับคู่ออเดอร์ที่รอ (Queued) กับเครื่องว่าง
+void processQueue();          // ตรวจคิวซ้ำด้วยตนเอง (ปกติระบบจับคู่อัตโนมัติอยู่แล้ว ดู autoAssignQueue())
 void markOrderCompleted();    // บังคับ Printing -> Completed ด้วยตนเอง (พิมพ์เสร็จก่อนเวลา)
 void markOrderDelivered();    // Completed -> PickedUp / Shipped
 void cancelOrder();
 void queueStatusView();
+void liveQueueMonitor();      // จอสถานะเรียลไทม์ อัปเดตเวลาที่เหลือ/จับคู่คิวอัตโนมัติทุก 1 วินาที
 void orderMenu();
+
+// จับคู่ออเดอร์ที่รอคิว (Queued) กับเครื่องพิมพ์ที่ว่าง (Idle) โดยอัตโนมัติ ไม่ต้องรอผู้ใช้สั่งเอง
+// เรียกจาก autoCompletePrinting() (ซึ่งถูกเรียกอยู่แล้วแทบทุกเมนู) รวมถึงจุดอื่น ๆ ที่ทำให้มีเครื่องว่าง
+// หรือมีคิวใหม่เกิดขึ้น (เพิ่มเครื่องพิมพ์, พิมพ์เสร็จ, ยกเลิกออเดอร์, เปลี่ยนสถานะเครื่องเป็น Idle)
+// คืนค่า true ถ้ามีการจับคู่เกิดขึ้นอย่างน้อย 1 รายการ
+bool autoAssignQueue();
 
 /* ---- ตรรกะหลักที่ใช้ร่วมกันทั้งสองฝั่ง ---- */
 void createOrderCore(int ci); // สร้างออเดอร์เมื่อทราบลูกค้า (ci) แล้ว

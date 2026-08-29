@@ -4,6 +4,7 @@
 #include "search.h"
 #include "storage.h"
 #include "display.h"
+#include "order.h" // ใช้ autoAssignQueue() เพื่อจับคู่คิวที่รออยู่กับเครื่องพิมพ์ที่เพิ่งว่าง/เพิ่งเพิ่มทันที
 #include <iostream>
 
 /* ==========================================================================
@@ -30,6 +31,7 @@ void insertPrinter() {
     printers[printerCount++] = p;
     savePrinters();
     cout << GREEN << "  เพิ่มเครื่องพิมพ์สำเร็จ รหัส: " << p.code << RESET << "\n";
+    autoAssignQueue(); // เครื่องใหม่ว่างอยู่ ถ้ามีคิวรออยู่พอดี ให้จับคู่ทันที ไม่ต้องรอ
 }
 
 void searchPrinter() {
@@ -83,6 +85,7 @@ void setPrinterMaintenance() {
     printers[idx].status = (c == 1) ? "Idle" : "Maintenance";
     savePrinters();
     cout << GREEN << "  อัปเดตสถานะสำเร็จ\n" << RESET;
+    if (printers[idx].status == "Idle") autoAssignQueue(); // เพิ่งว่าง ลองจับคู่กับคิวที่รออยู่ทันที
 }
 
 void printerMenu() {

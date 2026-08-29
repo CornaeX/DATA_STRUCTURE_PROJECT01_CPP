@@ -3,6 +3,7 @@
 #include "utils.h"
 #include "search.h"
 #include "storage.h"
+#include "order.h" // ใช้ autoAssignQueue() เพื่อจับคู่คิวกับเครื่องว่างอัตโนมัติทุกครั้งที่เรียก autoCompletePrinting()
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -97,6 +98,11 @@ void autoCompletePrinting() {
         saveOrders();
         savePrinters();
     }
+
+    // เครื่องที่เพิ่งว่างจากขั้นตอนด้านบนอาจมีคิวรออยู่พอดี -> จับคู่ให้ทันทีในตัวนี้เลย
+    // ทำให้ทุกเมนูที่เรียก autoCompletePrinting() (แทบทุกเมนูในระบบ) จับคู่คิวให้อัตโนมัติไปในตัว
+    // ผู้ใช้จึงไม่ต้องเข้าเมนู "ประมวลผลคิว" ด้วยตนเองอีกต่อไป
+    autoAssignQueue();
 }
 
 
