@@ -81,11 +81,11 @@ void materialMenu() {
     while (true) {
         clearScreen();
         printHeader("จัดการข้อมูลวัสดุ");
-        cout << "  1. แสดงรายการวัสดุทั้งหมด\n";
-        cout << "  2. ค้นหาวัสดุ\n";
-        cout << "  3. เพิ่มวัสดุใหม่\n";
-        cout << "  4. ลบวัสดุ\n";
-        cout << "  0. กลับเมนูหลัก\n";
+        printMenuOption(1, "แสดงรายการวัสดุทั้งหมด");
+        printMenuOption(2, "ค้นหาวัสดุ");
+        printMenuOption(3, "เพิ่มวัสดุใหม่");
+        printMenuOption(4, "ลบวัสดุ");
+        printMenuOption(0, "กลับเมนูหลัก", RED);
         int c = readIntInRange("\n  เลือกเมนู: ", 0, 4);
         clearScreen();
         if (c == 1) listMaterials();

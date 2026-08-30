@@ -80,7 +80,8 @@ void setPrinterMaintenance() {
         return;
     }
     cout << "  สถานะปัจจุบัน: " << printers[idx].status << "\n";
-    cout << "  1. Idle (พร้อมใช้งาน)\n  2. Maintenance (ซ่อมบำรุง)\n";
+    printMenuOption(1, "Idle (พร้อมใช้งาน)");
+    printMenuOption(2, "Maintenance (ซ่อมบำรุง)");
     int c = readIntInRange("  เลือก: ", 1, 2);
     printers[idx].status = (c == 1) ? "Idle" : "Maintenance";
     savePrinters();
@@ -93,12 +94,12 @@ void printerMenu() {
         autoCompletePrinting();
         clearScreen();
         printHeader("จัดการเครื่องพิมพ์");
-        cout << "  1. แสดงรายการเครื่องพิมพ์ทั้งหมด\n";
-        cout << "  2. ค้นหาเครื่องพิมพ์\n";
-        cout << "  3. เพิ่มเครื่องพิมพ์ใหม่\n";
-        cout << "  4. ลบเครื่องพิมพ์\n";
-        cout << "  5. เปลี่ยนสถานะเครื่อง (Idle/Maintenance)\n";
-        cout << "  0. กลับเมนูหลัก\n";
+        printMenuOption(1, "แสดงรายการเครื่องพิมพ์ทั้งหมด");
+        printMenuOption(2, "ค้นหาเครื่องพิมพ์");
+        printMenuOption(3, "เพิ่มเครื่องพิมพ์ใหม่");
+        printMenuOption(4, "ลบเครื่องพิมพ์");
+        printMenuOption(5, "เปลี่ยนสถานะเครื่อง (Idle/Maintenance)");
+        printMenuOption(0, "กลับเมนูหลัก", RED);
         int c = readIntInRange("\n  เลือกเมนู: ", 0, 5);
         clearScreen();
         if (c == 1) listPrinters();

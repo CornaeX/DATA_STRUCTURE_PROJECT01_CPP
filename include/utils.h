@@ -8,6 +8,7 @@
    ============================================================================ */
 
 #include <string>
+#include "types.h" // ใช้ค่าคงที่รหัสสี ANSI (GREEN ฯลฯ) เป็นค่าดีฟอลต์ของ printMenuOption()
 using namespace std;
 
 /* ---- screen / console ---- */
@@ -32,5 +33,10 @@ void printHeader(const string &title);
 void printLine();
 int displayWidth(const string &s);                // ความกว้างที่แสดงผลจริงของ UTF-8/ไทย
 string padRight(const string &s, int width);       // จัดคอลัมน์ให้ตรงกันแม้มีภาษาไทย
+
+/* ---- clickable menu options (เมาส์คลิกได้บน Windows console, ยังพิมพ์ตัวเลขเองได้ตามปกติ) ----
+   ใช้แทนการ cout พิมพ์ "  [n] label" ตรง ๆ ในทุกเมนู เพื่อให้จำตำแหน่งบนจอไว้สำหรับรับคลิกเมาส์
+   รายการที่จำไว้จะถูกล้างอัตโนมัติทุกครั้งที่เรียก printHeader() (แปลว่าเริ่มหน้าจอเมนูใหม่) */
+void printMenuOption(int number, const string &label, const string &color = GREEN);
 
 #endif // UTILS_H

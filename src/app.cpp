@@ -56,14 +56,14 @@ void ownerMainMenu() {
         cout << " ╚═════╝ ╚═════╝     ╚═╝     ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝   ╚═╝   \n";
         cout << RESET;
         printHeader("ระบบจัดการร้าน 3D PRINTING - เมนูเจ้าของร้าน/พนักงาน");
-        cout << GREEN << "  [1] " << RESET << "จัดการข้อมูลลูกค้า\n";
-        cout << GREEN << "  [2] " << RESET << "จัดการข้อมูลวัสดุ\n";
-        cout << GREEN << "  [3] " << RESET << "จัดการเครื่องพิมพ์\n";
-        cout << GREEN << "  [4] " << RESET << "จัดการออเดอร์งานพิมพ์ / คิวงาน\n";
-        cout << GREEN << "  [5] " << RESET << "POS - ชำระเงิน / ออกใบเสร็จ\n";
-        cout << GREEN << "  [6] " << RESET << "รายงาน / ประวัติการขาย\n";
-        cout << YELLOW << "  [9] " << RESET << "บันทึกข้อมูลทั้งหมด\n";
-        cout << RED << "  [0] " << RESET << "ออกจากระบบ\n";
+        printMenuOption(1, "จัดการข้อมูลลูกค้า");
+        printMenuOption(2, "จัดการข้อมูลวัสดุ");
+        printMenuOption(3, "จัดการเครื่องพิมพ์");
+        printMenuOption(4, "จัดการออเดอร์งานพิมพ์ / คิวงาน");
+        printMenuOption(5, "POS - ชำระเงิน / ออกใบเสร็จ");
+        printMenuOption(6, "รายงาน / ประวัติการขาย");
+        printMenuOption(9, "บันทึกข้อมูลทั้งหมด", YELLOW);
+        printMenuOption(0, "ออกจากระบบ", RED);
 
         int choice = readIntInRange("\n  กรุณาเลือกเมนู: ", 0, 9);
 

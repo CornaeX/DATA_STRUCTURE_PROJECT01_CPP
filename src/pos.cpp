@@ -157,8 +157,8 @@ void payOnlineCore(int oi) {
          << orders[oi].price << " บาท\n";
 
     cout << "\n  เลือกวิธีรับสินค้า:\n";
-    cout << "   1. รับที่ร้าน\n";
-    cout << "   2. จัดส่ง\n";
+    printMenuOption(1, "รับที่ร้าน");
+    printMenuOption(2, "จัดส่ง");
     int fc = readIntInRange("  เลือก [0=ยกเลิก]: ", 0, 2);
     if (fc == 0) { cout << YELLOW << "  ยกเลิกการชำระเงิน\n" << RESET; return; }
     string fulfillment = (fc == 2) ? "Shipping" : "Pickup";

@@ -113,11 +113,11 @@ void customerMenu() {
     while (true) {
         clearScreen();
         printHeader("จัดการข้อมูลลูกค้า");
-        cout << "  1. แสดงรายชื่อลูกค้าทั้งหมด\n";
-        cout << "  2. ค้นหาลูกค้า\n";
-        cout << "  3. เพิ่มลูกค้าใหม่\n";
-        cout << "  4. ลบลูกค้า\n";
-        cout << "  0. กลับเมนูหลัก\n";
+        printMenuOption(1, "แสดงรายชื่อลูกค้าทั้งหมด");
+        printMenuOption(2, "ค้นหาลูกค้า");
+        printMenuOption(3, "เพิ่มลูกค้าใหม่");
+        printMenuOption(4, "ลบลูกค้า");
+        printMenuOption(0, "กลับเมนูหลัก", RED);
         int c = readIntInRange("\n  เลือกเมนู: ", 0, 4);
         clearScreen();
         if (c == 1) listCustomers();

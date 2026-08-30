@@ -31,9 +31,9 @@ void reportMenu() {
     while (true) {
         clearScreen();
         printHeader("รายงาน");
-        cout << "  1. ประวัติการขาย (Sales History)\n";
-        cout << "  2. สรุปสต็อกวัสดุ\n";
-        cout << "  0. กลับเมนูหลัก\n";
+        printMenuOption(1, "ประวัติการขาย (Sales History)");
+        printMenuOption(2, "สรุปสต็อกวัสดุ");
+        printMenuOption(0, "กลับเมนูหลัก", RED);
         int c = readIntInRange("\n  เลือกเมนู: ", 0, 2);
         clearScreen();
         if (c == 1) showSalesHistory();

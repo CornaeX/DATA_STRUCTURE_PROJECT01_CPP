@@ -68,9 +68,9 @@ int main() {
         cout << " ╚═════╝ ╚═════╝     ╚═╝     ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝   ╚═╝   \n";
         cout << RESET;
         printHeader("ระบบจัดการร้าน 3D PRINTING - เลือกโหมดการใช้งาน");
-        cout << GREEN << "  [1] " << RESET << "โหมดลูกค้า\n";
-        cout << GREEN << "  [2] " << RESET << "โหมดเจ้าของร้าน/พนักงาน\n";
-        cout << RED   << "  [0] " << RESET << "ออกจากโปรแกรม\n";
+        printMenuOption(1, "โหมดลูกค้า");
+        printMenuOption(2, "โหมดเจ้าของร้าน/พนักงาน");
+        printMenuOption(0, "ออกจากโปรแกรม", RED);
 
         int mode = readIntInRange("\n  กรุณาเลือกโหมด: ", 0, 2);
 
