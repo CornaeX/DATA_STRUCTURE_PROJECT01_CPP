@@ -534,12 +534,12 @@ void orderMenu() {
         cout << "  2. ค้นหาออเดอร์\n";
         cout << "  3. สร้างออเดอร์ใหม่\n";
         cout << "  4. ยกเลิกออเดอร์\n";
-        cout << "  5. ดูสถานะคิว/เครื่องพิมพ์ (พร้อมเวลาที่เหลือ)\n";
-        cout << "  6. ตรวจสอบคิวซ้ำด้วยตนเอง (ปกติจับคู่ให้อัตโนมัติอยู่แล้ว)\n";
-        cout << "  7. แจ้งพิมพ์งานเสร็จก่อนเวลา (บังคับ Completed ด้วยตนเอง)\n";
-        cout << "  8. ยืนยันส่งมอบสินค้า (รับที่ร้าน/จัดส่งแล้ว)\n";
-        cout << "  9. ชำระเงินออนไลน์ (แทนลูกค้า)\n";
-        cout << "  10. ดูสถานะแบบเรียลไทม์ (นับเวลาถอยหลังสด ๆ อัปเดตทุกวินาที)\n";
+        cout << "  5. ดูสถานะคิว/เครื่องพิมพ์\n";
+        cout << "  6. ตรวจสอบคิวซ้ำด้วยตนเอง\n";
+        cout << "  7. แจ้งพิมพ์งานเสร็จก่อนเวลา\n";
+        cout << "  8. ยืนยันส่งมอบสินค้า\n";
+        cout << "  9. ชำระเงินออนไลน์\n";
+        // cout << "  10. ดูสถานะแบบเรียลไทม์\n";
         cout << "  0. กลับเมนูหลัก\n";
         int c = readIntInRange("\n  เลือกเมนู: ", 0, 10);
         clearScreen();
@@ -547,12 +547,13 @@ void orderMenu() {
         else if (c == 2) searchOrder();
         else if (c == 3) createOrder();
         else if (c == 4) cancelOrder();
-        else if (c == 5) queueStatusView();
+        else if (c == 5) { liveQueueMonitor(); continue; }
+        // else if (c == 5) queueStatusView();
         else if (c == 6) processQueue();
         else if (c == 7) markOrderCompleted();
         else if (c == 8) markOrderDelivered();
         else if (c == 9) ownerPayOnline();
-        else if (c == 10) { liveQueueMonitor(); continue; } // ออกมาแล้ว (กด Enter ไปแล้ว) ไม่ต้อง pause() ซ้ำ
+        // else if (c == 10) { liveQueueMonitor(); continue; }
         else if (c == 0) return;
         pause();
     }
